@@ -2,6 +2,8 @@
 name = "trackdoctor"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-only"
+description = "Finds out why a SteamVR lighthouse device drifted. Watches poses, the vrserver log, and the USB bus, then names the cause with evidence."
 
 [dependencies]
 anyhow = "1.0.104"
