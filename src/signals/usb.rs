@@ -24,24 +24,44 @@ fn describe(d: &DeviceInfo) -> String {
     )
 }
 
+#[derive(Clone)]
+struct Dongle {
+    desc: String,
+    port: String,
+    serial: Option<String>,
+}
+
+fn dongle_of(d: &DeviceInfo) -> Dongle {
+    Dongle {
+        desc: describe(d),
+        port: port_label(d),
+        serial: d.serial_number().map(str::to_string),
+    }
+}
+
 pub struct UsbWatch {
     watch: nusb::hotplug::HotplugWatch,
-    valve: HashMap<DeviceId, (String, String)>,
+    valve: HashMap<DeviceId, Dongle>,
 }
 
 impl UsbWatch {
     pub fn new() -> anyhow::Result<(Self, Vec<String>)> {
+        let watch = nusb::watch_devices()?;
         let devices: Vec<DeviceInfo> = nusb::list_devices().wait()?.collect();
         let mut valve = HashMap::new();
         let mut audit = Vec::new();
         let mut by_hub: HashMap<String, Vec<String>> = HashMap::new();
         for d in devices.iter().filter(|d| d.vendor_id() == VALVE_VID) {
-            valve.insert(d.id(), (describe(d), port_label(d)));
+            valve.insert(d.id(), dongle_of(d));
             let chain = d.port_chain();
             let hub = format!(
                 "{}:{}",
                 d.bus_id(),
-                chain[..chain.len().saturating_sub(1)].iter().map(|p| p.to_string()).collect::<Vec<_>>().join(".")
+                chain[..chain.len().saturating_sub(1)]
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".")
             );
             by_hub.entry(hub).or_default().push(describe(d));
             audit.push(format!("valve usb device: {}", describe(d)));
@@ -55,7 +75,6 @@ impl UsbWatch {
                 ));
             }
         }
-        let watch = nusb::watch_devices()?;
         Ok((Self { watch, valve }, audit))
     }
 
@@ -67,15 +86,30 @@ impl UsbWatch {
             match ev {
                 HotplugEvent::Connected(d) => {
                     if d.vendor_id() == VALVE_VID {
-                        let desc = describe(&d);
-                        let port = port_label(&d);
-                        self.valve.insert(d.id(), (desc.clone(), port.clone()));
-                        out.push(SignalEvent::new(Source::Usb, None, Kind::UsbAttach { port }, desc));
+                        let dongle = dongle_of(&d);
+                        out.push(SignalEvent::new(
+                            Source::Usb,
+                            None,
+                            Kind::UsbAttach {
+                                port: dongle.port.clone(),
+                                dongle: dongle.serial.clone(),
+                            },
+                            dongle.desc.clone(),
+                        ));
+                        self.valve.insert(d.id(), dongle);
                     }
                 }
                 HotplugEvent::Disconnected(id) => {
-                    if let Some((desc, port)) = self.valve.remove(&id) {
-                        out.push(SignalEvent::new(Source::Usb, None, Kind::UsbRemove { port }, desc));
+                    if let Some(d) = self.valve.remove(&id) {
+                        out.push(SignalEvent::new(
+                            Source::Usb,
+                            None,
+                            Kind::UsbRemove {
+                                port: d.port,
+                                dongle: d.serial,
+                            },
+                            d.desc,
+                        ));
                     }
                 }
             }

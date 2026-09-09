@@ -6,15 +6,17 @@ pub struct Thresholds {
     pub accel_mps2: f32,
     pub ori_rad_s: f32,
     pub ori_excess_rad_s: f32,
+    pub ori_min_rad_s: f32,
     pub drift_m: f32,
     pub drift_min_ms: u64,
-    pub drift_vel_mps: f32,
+    pub frozen_ms: u64,
     pub snap_min_ms: u64,
     pub snap_max_ms: u64,
     pub snap_cos: f32,
     pub snap_ratio_lo: f32,
     pub snap_ratio_hi: f32,
     pub suppress_ms: u64,
+    pub min_dt_ms: u64,
     pub max_gap_ms: u64,
 }
 
@@ -25,15 +27,17 @@ impl Default for Thresholds {
             accel_mps2: 300.0,
             ori_rad_s: 100.0,
             ori_excess_rad_s: 20.0,
+            ori_min_rad_s: 30.0,
             drift_m: 0.10,
             drift_min_ms: 500,
-            drift_vel_mps: 0.1,
+            frozen_ms: 250,
             snap_min_ms: 200,
             snap_max_ms: 2000,
             snap_cos: -0.7,
             snap_ratio_lo: 0.5,
             snap_ratio_hi: 2.0,
             suppress_ms: 500,
+            min_dt_ms: 5,
             max_gap_ms: 100,
         }
     }
@@ -56,6 +60,7 @@ pub struct DevDetect {
     activated_at: u64,
     armed: Option<(u64, [f32; 3], bool)>,
     last_jump: Option<(u64, [f32; 3])>,
+    frozen: Option<(u64, bool)>,
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -86,6 +91,7 @@ impl DevDetect {
         self.last = None;
         self.armed = None;
         self.last_jump = None;
+        self.frozen = None;
     }
 
     pub fn step(&mut self, f: &Frame, th: &Thresholds) -> Vec<Kind> {
@@ -101,6 +107,8 @@ impl DevDetect {
 
         if !f.valid || f.state.is_calibrating() {
             self.last = None;
+            self.armed = None;
+            self.frozen = None;
             return out;
         }
         if f.t_ms < self.activated_at + th.suppress_ms {
@@ -112,7 +120,21 @@ impl DevDetect {
             return out;
         };
         let dt_ms = f.t_ms.saturating_sub(last.t_ms);
-        if dt_ms == 0 || dt_ms > th.max_gap_ms {
+        if dt_ms < th.min_dt_ms {
+            return out;
+        }
+        if f.pos == last.pos && f.rot == last.rot {
+            let (t0, emitted) = self.frozen.get_or_insert((last.t_ms, false));
+            let held = f.t_ms.saturating_sub(*t0);
+            if held >= th.frozen_ms && !*emitted {
+                out.push(Kind::PoseFrozen { ms: held });
+                *emitted = true;
+            }
+            self.last = Some(*f);
+            return out;
+        }
+        self.frozen = None;
+        if dt_ms > th.max_gap_ms {
             self.last = Some(*f);
             return out;
         }
@@ -127,7 +149,10 @@ impl DevDetect {
         let residual = norm(jvec);
         let accel = norm(sub(f.vel, last.vel)) / dt;
         if residual > th.jump_m || accel > th.accel_mps2 {
-            out.push(Kind::Jump { meters: residual, accel_mps2: accel });
+            out.push(Kind::Jump {
+                meters: residual,
+                accel_mps2: accel,
+            });
             if let Some((jt, jv)) = self.last_jump {
                 let gap = f.t_ms.saturating_sub(jt);
                 let (na, nb) = (norm(jv), residual);
@@ -150,19 +175,27 @@ impl DevDetect {
         }
 
         let ori_rate = rot_angle(&last.rot, &f.rot) / dt;
-        if ori_rate > th.ori_rad_s || ori_rate > f.ang_speed + th.ori_excess_rad_s && ori_rate > 30.0 {
-            out.push(Kind::OrientationJump { rad_per_s: ori_rate });
+        if ori_rate > th.ori_rad_s
+            || (ori_rate > f.ang_speed + th.ori_excess_rad_s && ori_rate > th.ori_min_rad_s)
+        {
+            out.push(Kind::OrientationJump {
+                rad_per_s: ori_rate,
+            });
         }
 
         if let Some((t0, p0, emitted)) = self.armed
-            && !emitted {
-                let disp = norm(sub(f.pos, p0));
-                let held = f.t_ms.saturating_sub(t0);
-                if disp > th.drift_m && held > th.drift_min_ms && norm(f.vel) < th.drift_vel_mps {
-                    out.push(Kind::Drift { meters: disp, secs: held as f32 / 1000.0 });
-                    self.armed = Some((t0, p0, true));
-                }
+            && !emitted
+        {
+            let disp = norm(sub(f.pos, p0));
+            let held = f.t_ms.saturating_sub(t0);
+            if disp > th.drift_m && held > th.drift_min_ms {
+                out.push(Kind::Drift {
+                    meters: disp,
+                    secs: held as f32 / 1000.0,
+                });
+                self.armed = Some((t0, p0, true));
             }
+        }
 
         self.last = Some(*f);
         out
@@ -178,7 +211,11 @@ mod tests {
             t_ms,
             pos,
             vel,
-            rot: [[1.0, 0.0, 0.0, pos[0]], [0.0, 1.0, 0.0, pos[1]], [0.0, 0.0, 1.0, pos[2]]],
+            rot: [
+                [1.0, 0.0, 0.0, pos[0]],
+                [0.0, 1.0, 0.0, pos[1]],
+                [0.0, 0.0, 1.0, pos[2]],
+            ],
             ang_speed: 0.0,
             state: TrackState::RunningOk,
             valid: true,
@@ -203,7 +240,10 @@ mod tests {
         d.step(&frame(1000, [0.0, 1.0, 0.0], [0.0; 3]), &th);
         d.step(&frame(1011, [0.0, 1.0, 0.0], [0.0; 3]), &th);
         let kinds = d.step(&frame(1022, [0.3, 1.0, 0.0], [0.0; 3]), &th);
-        assert!(kinds.iter().any(|k| matches!(k, Kind::Jump { .. })), "{kinds:?}");
+        assert!(
+            kinds.iter().any(|k| matches!(k, Kind::Jump { .. })),
+            "{kinds:?}"
+        );
     }
 
     #[test]
@@ -216,7 +256,10 @@ mod tests {
             d.step(&frame(1022 + i * 11, [0.2, 1.0, 0.0], [0.0; 3]), &th);
         }
         let kinds = d.step(&frame(1473, [0.0, 1.0, 0.0], [0.0; 3]), &th);
-        assert!(kinds.iter().any(|k| matches!(k, Kind::SnapBack { .. })), "{kinds:?}");
+        assert!(
+            kinds.iter().any(|k| matches!(k, Kind::SnapBack { .. })),
+            "{kinds:?}"
+        );
     }
 
     #[test]
@@ -233,6 +276,28 @@ mod tests {
             }
         }
         panic!("drift never fired");
+    }
+
+    #[test]
+    fn frozen_pose_fires_once() {
+        let th = Thresholds::default();
+        let mut d = DevDetect::default();
+        d.step(&frame(1000, [0.5, 1.0, 0.0], [0.0; 3]), &th);
+        d.step(&frame(1011, [0.51, 1.0, 0.0], [0.0; 3]), &th);
+        let mut fired = 0;
+        for i in 0..60u64 {
+            let kinds = d.step(&frame(1022 + i * 11, [0.51, 1.0, 0.0], [0.0; 3]), &th);
+            fired += kinds
+                .iter()
+                .filter(|k| matches!(k, Kind::PoseFrozen { .. }))
+                .count();
+        }
+        assert_eq!(fired, 1);
+        let kinds = d.step(&frame(1022 + 60 * 11, [0.52, 1.0, 0.0], [0.0; 3]), &th);
+        assert!(
+            !kinds.iter().any(|k| matches!(k, Kind::PoseFrozen { .. })),
+            "{kinds:?}"
+        );
     }
 
     #[test]

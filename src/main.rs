@@ -7,7 +7,8 @@ mod signals;
 mod tui;
 
 use engine::{Engine, Msg};
-use signals::openvr::VrMsg;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -15,33 +16,24 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("report") => {
-            let path = args.get(1).map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("usage: trackdoctor report <verdicts.jsonl>"))?;
+            let path = args
+                .get(1)
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("usage: trackdoctor report <verdicts.jsonl>"))?;
             print!("{}", report::render_file(&path)?);
             Ok(())
         }
         Some("dump") => run(true),
         None => run(false),
-        Some(other) => Err(anyhow::anyhow!("unknown command '{other}'; usage: trackdoctor [dump | report <verdicts.jsonl>]")),
+        Some(other) => Err(anyhow::anyhow!(
+            "unknown command '{other}'; usage: trackdoctor [dump | report <verdicts.jsonl>]"
+        )),
     }
 }
 
 fn spawn_collectors(tx: mpsc::Sender<Msg>) -> Vec<String> {
     let vr_tx = tx.clone();
-    std::thread::spawn(move || {
-        let (itx, irx) = mpsc::channel();
-        std::thread::spawn(move || signals::openvr::run(itx));
-        for m in irx {
-            let mapped = match m {
-                VrMsg::Event(e) => Msg::Event(e),
-                VrMsg::Frame(f) => Msg::Frame(f),
-                VrMsg::Device(d) => Msg::Device(d),
-                VrMsg::Status(s) => Msg::Status(s),
-            };
-            if vr_tx.send(mapped).is_err() {
-                return;
-            }
-        }
-    });
+    std::thread::spawn(move || signals::openvr::run(vr_tx));
 
     let log_tx = tx.clone();
     std::thread::spawn(move || {
@@ -59,18 +51,27 @@ fn spawn_collectors(tx: mpsc::Sender<Msg>) -> Vec<String> {
     match signals::usb::UsbWatch::new() {
         Ok((mut watch, audit)) => {
             let usb_tx = tx;
-            std::thread::spawn(move || loop {
-                for ev in watch.poll() {
-                    if usb_tx.send(Msg::Event(ev)).is_err() {
-                        return;
+            std::thread::spawn(move || {
+                loop {
+                    for ev in watch.poll() {
+                        if usb_tx.send(Msg::Event(ev)).is_err() {
+                            return;
+                        }
                     }
+                    std::thread::sleep(Duration::from_millis(500));
                 }
-                std::thread::sleep(Duration::from_millis(500));
             });
             audit
         }
         Err(e) => vec![format!("usb watcher unavailable: {e}")],
     }
+}
+
+fn shutdown_flag() -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let f = flag.clone();
+    let _ = ctrlc::set_handler(move || f.store(true, Ordering::SeqCst));
+    flag
 }
 
 fn run(dump: bool) -> anyhow::Result<()> {
@@ -79,18 +80,19 @@ fn run(dump: bool) -> anyhow::Result<()> {
     let mut engine = Engine::new(session);
     let (tx, rx) = mpsc::channel();
     let audit = spawn_collectors(tx);
+    let stop = shutdown_flag();
 
     if dump {
         for line in &audit {
             println!("audit: {line}");
         }
         println!("session dir: {}", session_dir.display());
-        loop {
+        while !stop.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(Msg::Status(s)) => println!("status: {s}"),
                 Ok(Msg::Device(d)) => {
                     println!(
-                        "device {}: {} {} class={} dongle={} battery={:?} lighthouse={}",
+                        "device {}: {} {} class={:?} dongle={} battery={:?} lighthouse={}",
                         d.idx, d.serial, d.model, d.class, d.dongle, d.battery_pct, d.is_lighthouse
                     );
                     engine.handle(Msg::Device(d));
@@ -111,6 +113,6 @@ fn run(dump: bool) -> anyhow::Result<()> {
         println!("report: {}", path.display());
         Ok(())
     } else {
-        tui::run(engine, rx, audit, session_dir)
+        tui::run(engine, rx, audit, session_dir, stop)
     }
 }

@@ -19,33 +19,99 @@ pub enum Source {
     Probe,
 }
 
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceClass {
+    Hmd,
+    Controller,
+    GenericTracker,
+    TrackingReference,
+    Other,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub enum Kind {
     DeviceActivated,
     DeviceDeactivated,
-    TrackingState { from: String, to: String },
+    TrackingState {
+        from: TrackState,
+        to: TrackState,
+    },
     PoseValid(bool),
     WirelessDisconnect,
     WirelessReconnect,
     StandbyStart,
     StandbyEnd,
-    OpticalLoss { base: String, outage_ms: u64 },
+    OpticalLoss {
+        base: String,
+        outage_ms: u64,
+    },
     SyncAcquired,
-    BackFacingHits { count: u64 },
-    DongleBind { dongle: String },
+    BackFacingHits {
+        count: u64,
+    },
+    DongleBind {
+        dongle: String,
+    },
     MalformedPacket,
     ImuOffScale,
     BootstrapFail,
     OotxSelected,
     LeavingStandby,
-    BaseLaserFault { base: String },
+    BaseLaserFault {
+        base: String,
+    },
     NoOpticalFrames,
-    UsbAttach { port: String },
-    UsbRemove { port: String },
-    Jump { meters: f32, accel_mps2: f32 },
-    OrientationJump { rad_per_s: f32 },
-    Drift { meters: f32, secs: f32 },
-    SnapBack { meters: f32 },
+    LogRotated,
+    UsbAttach {
+        port: String,
+        dongle: Option<String>,
+    },
+    UsbRemove {
+        port: String,
+        dongle: Option<String>,
+    },
+    Jump {
+        meters: f32,
+        accel_mps2: f32,
+    },
+    OrientationJump {
+        rad_per_s: f32,
+    },
+    Drift {
+        meters: f32,
+        secs: f32,
+    },
+    SnapBack {
+        meters: f32,
+    },
+    PoseFrozen {
+        ms: u64,
+    },
+    BatteryLevel {
+        pct: f32,
+    },
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Kind::Jump { meters, accel_mps2 } => write!(
+                f,
+                "pose jump {meters:.3}m (implied accel {accel_mps2:.0} m/s^2)"
+            ),
+            Kind::OrientationJump { rad_per_s } => {
+                write!(f, "orientation jump {rad_per_s:.0} rad/s")
+            }
+            Kind::Drift { meters, secs } => {
+                write!(f, "dead-reckoning drift {meters:.3}m over {secs:.1}s")
+            }
+            Kind::SnapBack { meters } => write!(f, "snap-back correction {meters:.3}m"),
+            Kind::PoseFrozen { ms } => write!(f, "pose frozen for {ms}ms while reported valid"),
+            Kind::BatteryLevel { pct } => write!(f, "battery {pct:.0}%"),
+            Kind::TrackingState { from, to } => write!(f, "tracking {from:?} -> {to:?}"),
+            k => write!(f, "{k:?}"),
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,14 +145,10 @@ impl TrackState {
     }
 
     pub fn is_calibrating(self) -> bool {
-        matches!(self, Self::CalibratingInProgress | Self::CalibratingOutOfRange)
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Self::Other(v) => format!("Other({v})"),
-            s => format!("{s:?}"),
-        }
+        matches!(
+            self,
+            Self::CalibratingInProgress | Self::CalibratingOutOfRange
+        )
     }
 }
 
@@ -98,7 +160,18 @@ pub fn now_ms() -> u64 {
 }
 
 impl SignalEvent {
-    pub fn new(source: Source, device: Option<String>, kind: Kind, detail: impl Into<String>) -> Self {
-        Self { t_ms: now_ms(), source, device, kind, detail: detail.into() }
+    pub fn new(
+        source: Source,
+        device: Option<String>,
+        kind: Kind,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            t_ms: now_ms(),
+            source,
+            device,
+            kind,
+            detail: detail.into(),
+        }
     }
 }

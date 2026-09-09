@@ -1,6 +1,11 @@
-use crate::event::{Kind, SignalEvent, Source, TrackState, now_ms};
+use crate::engine::Msg;
+use crate::event::{DeviceClass, Kind, SignalEvent, Source, TrackState, now_ms};
 use openvr::system::Event;
-use openvr::{ApplicationType, TrackedDeviceClass, TrackedDeviceIndex, TrackingUniverseOrigin, MAX_TRACKED_DEVICE_COUNT};
+use openvr::{
+    ApplicationType, MAX_TRACKED_DEVICE_COUNT, TrackedDeviceClass, TrackedDeviceIndex,
+    TrackingUniverseOrigin,
+};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
@@ -20,17 +25,10 @@ pub struct DeviceMeta {
     pub idx: usize,
     pub serial: String,
     pub model: String,
-    pub class: String,
+    pub class: DeviceClass,
     pub dongle: String,
     pub battery_pct: Option<f32>,
     pub is_lighthouse: bool,
-}
-
-pub enum VrMsg {
-    Event(SignalEvent),
-    Frame(FrameSample),
-    Device(DeviceMeta),
-    Status(String),
 }
 
 struct DevState {
@@ -38,46 +36,77 @@ struct DevState {
     valid: bool,
     state: TrackState,
     serial: Option<String>,
+    battery_pct: Option<f32>,
     interesting: bool,
 }
 
 impl Default for DevState {
     fn default() -> Self {
-        Self { connected: false, valid: false, state: TrackState::Uninitialized, serial: None, interesting: false }
+        Self {
+            connected: false,
+            valid: false,
+            state: TrackState::Uninitialized,
+            serial: None,
+            battery_pct: None,
+            interesting: false,
+        }
     }
 }
 
-pub fn run(tx: std::sync::mpsc::Sender<VrMsg>) {
-    let ctx = loop {
-        match unsafe { openvr::init(ApplicationType::Background) } {
-            Ok(c) => break c,
-            Err(e) => {
-                let _ = tx.send(VrMsg::Status(format!("waiting for SteamVR: {e:?}")));
-                std::thread::sleep(Duration::from_secs(5));
+const BATTERY_POLL_TICKS: u32 = 5400;
+
+pub fn run(tx: Sender<Msg>) {
+    loop {
+        let ctx = loop {
+            match unsafe { openvr::init(ApplicationType::Background) } {
+                Ok(c) => break c,
+                Err(e) => {
+                    if tx
+                        .send(Msg::Status(format!("waiting for SteamVR: {e:?}")))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                }
             }
+        };
+        session(&ctx, &tx);
+        drop(ctx);
+        if tx
+            .send(Msg::Status("SteamVR exited; waiting for restart".into()))
+            .is_err()
+        {
+            return;
         }
-    };
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
     let Ok(system) = ctx.system() else {
-        let _ = tx.send(VrMsg::Status("IVRSystem unavailable".into()));
+        let _ = tx.send(Msg::Status("IVRSystem unavailable".into()));
         return;
     };
-    let _ = tx.send(VrMsg::Status("connected to SteamVR".into()));
+    let _ = tx.send(Msg::Status("connected to SteamVR".into()));
 
-    let mut devs: Vec<DevState> = (0..MAX_TRACKED_DEVICE_COUNT).map(|_| DevState::default()).collect();
+    let mut devs: Vec<DevState> = (0..MAX_TRACKED_DEVICE_COUNT)
+        .map(|_| DevState::default())
+        .collect();
     for (i, dev) in devs.iter_mut().enumerate() {
         if system.is_tracked_device_connected(TrackedDeviceIndex(i as u32)) {
-            announce(&system, i, dev, &tx);
+            announce(&system, i, dev, tx);
         }
     }
 
+    let mut tick: u32 = 0;
     loop {
         while let Some(info) = system.poll_next_event() {
             let i = info.tracked_device_index.0 as usize;
-            let serial = devs.get(i).and_then(|d| d.serial.clone());
             let kind = match info.event {
                 Event::TrackedDeviceActivated => {
                     if i < MAX_TRACKED_DEVICE_COUNT {
-                        announce(&system, i, &mut devs[i], &tx);
+                        announce(&system, i, &mut devs[i], tx);
                     }
                     Some(Kind::DeviceActivated)
                 }
@@ -87,21 +116,27 @@ pub fn run(tx: std::sync::mpsc::Sender<VrMsg>) {
                 Event::EnterStandbyMode => Some(Kind::StandbyStart),
                 Event::LeaveStandbyMode => Some(Kind::StandbyEnd),
                 Event::Quit(_) | Event::ProcessQuit(_) | Event::DriverRequestedQuit => {
-                    let _ = tx.send(VrMsg::Status("SteamVR is shutting down".into()));
                     system.acknowledge_quit_exiting();
                     return;
                 }
                 _ => None,
             };
             if let Some(kind) = kind {
-                let serial = devs.get(i).and_then(|d| d.serial.clone()).or(serial);
-                let detail = format!("device {i} {:?}", kind);
-                let _ = tx.send(VrMsg::Event(SignalEvent::new(Source::Api, serial, kind, detail)));
+                let serial = devs.get(i).and_then(|d| d.serial.clone());
+                let detail = format!("device {i} {kind}");
+                let _ = tx.send(Msg::Event(SignalEvent::new(
+                    Source::Api,
+                    serial,
+                    kind,
+                    detail,
+                )));
             }
         }
 
         let poses = system.device_to_absolute_tracking_pose(TrackingUniverseOrigin::Standing, 0.0);
         let t = now_ms();
+        tick = tick.wrapping_add(1);
+        let poll_battery = tick.is_multiple_of(BATTERY_POLL_TICKS);
         for i in 0..MAX_TRACKED_DEVICE_COUNT {
             let d = &mut devs[i];
             if !d.interesting {
@@ -113,27 +148,70 @@ pub fn run(tx: std::sync::mpsc::Sender<VrMsg>) {
             let valid = p.pose_is_valid();
             let state = TrackState::from_raw(raw.eTrackingResult);
             if connected != d.connected {
-                let kind = if connected { Kind::DeviceActivated } else { Kind::DeviceDeactivated };
-                let _ = tx.send(VrMsg::Event(SignalEvent::new(Source::Api, d.serial.clone(), kind, format!("device {i} connected={connected}"))));
+                let kind = if connected {
+                    Kind::DeviceActivated
+                } else {
+                    Kind::DeviceDeactivated
+                };
+                let _ = tx.send(Msg::Event(SignalEvent::new(
+                    Source::Api,
+                    d.serial.clone(),
+                    kind,
+                    format!("device {i} connected={connected}"),
+                )));
                 d.connected = connected;
             }
             if valid != d.valid {
-                let _ = tx.send(VrMsg::Event(SignalEvent::new(Source::Api, d.serial.clone(), Kind::PoseValid(valid), format!("device {i} pose_valid={valid}"))));
+                let _ = tx.send(Msg::Event(SignalEvent::new(
+                    Source::Api,
+                    d.serial.clone(),
+                    Kind::PoseValid(valid),
+                    format!("device {i} pose_valid={valid}"),
+                )));
                 d.valid = valid;
             }
             if state != d.state {
-                let _ = tx.send(VrMsg::Event(SignalEvent::new(
+                let kind = Kind::TrackingState {
+                    from: d.state,
+                    to: state,
+                };
+                let _ = tx.send(Msg::Event(SignalEvent::new(
                     Source::Api,
                     d.serial.clone(),
-                    Kind::TrackingState { from: d.state.label(), to: state.label() },
-                    format!("device {i} {} -> {}", d.state.label(), state.label()),
+                    kind.clone(),
+                    format!("device {i} {kind}"),
                 )));
                 d.state = state;
+            }
+            if poll_battery && connected {
+                let pct = system
+                    .get_tracked_device_property_f32(
+                        TrackedDeviceIndex(i as u32),
+                        openvr::property::DeviceBatteryPercentage_Float.0,
+                    )
+                    .ok()
+                    .map(|b| b * 100.0);
+                if let Some(pct) = pct {
+                    let changed = d
+                        .battery_pct
+                        .map(|old| (old - pct).abs() >= 5.0)
+                        .unwrap_or(true);
+                    if changed {
+                        d.battery_pct = Some(pct);
+                        let _ = tx.send(Msg::Battery { idx: i, pct });
+                        let _ = tx.send(Msg::Event(SignalEvent::new(
+                            Source::Api,
+                            d.serial.clone(),
+                            Kind::BatteryLevel { pct },
+                            format!("device {i} battery {pct:.0}%"),
+                        )));
+                    }
+                }
             }
             if connected {
                 let m = raw.mDeviceToAbsoluteTracking.m;
                 let av = raw.vAngularVelocity.v;
-                let _ = tx.send(VrMsg::Frame(FrameSample {
+                let _ = tx.send(Msg::Frame(FrameSample {
                     idx: i,
                     t_ms: t,
                     pos: [m[0][3], m[1][3], m[2][3]],
@@ -156,29 +234,39 @@ fn prop(system: &openvr::System, i: usize, p: openvr::TrackedDeviceProperty) -> 
         .unwrap_or_default()
 }
 
-fn announce(system: &openvr::System, i: usize, d: &mut DevState, tx: &std::sync::mpsc::Sender<VrMsg>) {
-    let class = system.tracked_device_class(TrackedDeviceIndex(i as u32));
-    let tracking_system = prop(system, i, openvr::property::TrackingSystemName_String);
-    let serial = prop(system, i, openvr::property::SerialNumber_String);
-    let is_lighthouse = tracking_system.contains("lighthouse");
-    d.serial = if serial.is_empty() { None } else { Some(serial.clone()) };
-    d.interesting = matches!(
-        class,
-        TrackedDeviceClass::HMD | TrackedDeviceClass::Controller | TrackedDeviceClass::GenericTracker | TrackedDeviceClass::TrackingReference
-    );
+fn announce(system: &openvr::System, i: usize, d: &mut DevState, tx: &Sender<Msg>) {
+    let class = match system.tracked_device_class(TrackedDeviceIndex(i as u32)) {
+        TrackedDeviceClass::HMD => DeviceClass::Hmd,
+        TrackedDeviceClass::Controller => DeviceClass::Controller,
+        TrackedDeviceClass::GenericTracker => DeviceClass::GenericTracker,
+        TrackedDeviceClass::TrackingReference => DeviceClass::TrackingReference,
+        _ => DeviceClass::Other,
+    };
+    d.interesting = class != DeviceClass::Other;
     if !d.interesting {
         return;
     }
+    let tracking_system = prop(system, i, openvr::property::TrackingSystemName_String);
+    let mut serial = prop(system, i, openvr::property::SerialNumber_String);
+    if serial.is_empty() {
+        serial = format!("dev-{i}");
+    }
+    d.serial = Some(serial.clone());
     let battery = system
-        .get_tracked_device_property_f32(TrackedDeviceIndex(i as u32), openvr::property::DeviceBatteryPercentage_Float.0)
-        .ok();
-    let _ = tx.send(VrMsg::Device(DeviceMeta {
+        .get_tracked_device_property_f32(
+            TrackedDeviceIndex(i as u32),
+            openvr::property::DeviceBatteryPercentage_Float.0,
+        )
+        .ok()
+        .map(|b| b * 100.0);
+    d.battery_pct = battery;
+    let _ = tx.send(Msg::Device(DeviceMeta {
         idx: i,
         serial,
         model: prop(system, i, openvr::property::ModelNumber_String),
-        class: format!("{class:?}"),
+        class,
         dongle: prop(system, i, openvr::property::ConnectedWirelessDongle_String),
-        battery_pct: battery.map(|b| b * 100.0),
-        is_lighthouse,
+        battery_pct: battery,
+        is_lighthouse: tracking_system.contains("lighthouse"),
     }));
 }
