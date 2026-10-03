@@ -8,7 +8,7 @@ pub struct Thresholds {
     pub ori_excess_rad_s: f32,
     pub ori_min_rad_s: f32,
     pub drift_m: f32,
-    pub drift_min_ms: u64,
+    pub max_radius_m: f32,
     pub frozen_ms: u64,
     pub snap_min_ms: u64,
     pub snap_max_ms: u64,
@@ -29,7 +29,7 @@ impl Default for Thresholds {
             ori_excess_rad_s: 20.0,
             ori_min_rad_s: 30.0,
             drift_m: 0.10,
-            drift_min_ms: 500,
+            max_radius_m: 50.0,
             frozen_ms: 250,
             snap_min_ms: 200,
             snap_max_ms: 2000,
@@ -58,9 +58,30 @@ pub struct Frame {
 pub struct DevDetect {
     last: Option<Frame>,
     activated_at: u64,
-    armed: Option<(u64, [f32; 3], bool)>,
+    dropout_since: Option<u64>,
     last_jump: Option<(u64, [f32; 3])>,
     frozen: Option<(u64, bool)>,
+}
+
+fn dead_reckoning(s: TrackState) -> bool {
+    matches!(
+        s,
+        TrackState::CalibratingInProgress
+            | TrackState::CalibratingOutOfRange
+            | TrackState::FallbackRotationOnly
+    )
+}
+
+pub fn beyond_radius(pos: [f32; 3], th: &Thresholds) -> bool {
+    norm(pos) > th.max_radius_m
+}
+
+fn predict(last: &Frame, dt: f32) -> [f32; 3] {
+    [
+        last.pos[0] + last.vel[0] * dt,
+        last.pos[1] + last.vel[1] * dt,
+        last.pos[2] + last.vel[2] * dt,
+    ]
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -89,7 +110,7 @@ impl DevDetect {
     pub fn on_activated(&mut self, t_ms: u64) {
         self.activated_at = t_ms;
         self.last = None;
-        self.armed = None;
+        self.dropout_since = None;
         self.last_jump = None;
         self.frozen = None;
     }
@@ -97,22 +118,22 @@ impl DevDetect {
     pub fn step(&mut self, f: &Frame, th: &Thresholds) -> Vec<Kind> {
         let mut out = Vec::new();
 
-        if f.state != TrackState::RunningOk && f.valid {
-            if self.armed.is_none() {
-                self.armed = Some((f.t_ms, f.pos, false));
-            }
-        } else if f.state == TrackState::RunningOk {
-            self.armed = None;
-        }
-
-        if !f.valid || f.state.is_calibrating() {
+        if !f.valid || beyond_radius(f.pos, th) {
             self.last = None;
-            self.armed = None;
+            self.dropout_since = None;
             self.frozen = None;
             return out;
         }
         if f.t_ms < self.activated_at + th.suppress_ms {
             self.last = Some(*f);
+            return out;
+        }
+        if dead_reckoning(f.state) {
+            if self.dropout_since.is_none() && self.last.is_some_and(|l| !dead_reckoning(l.state)) {
+                self.dropout_since = Some(f.t_ms);
+            }
+            self.last = Some(*f);
+            self.frozen = None;
             return out;
         }
         let Some(last) = self.last else {
@@ -121,6 +142,22 @@ impl DevDetect {
         };
         let dt_ms = f.t_ms.saturating_sub(last.t_ms);
         if dt_ms < th.min_dt_ms {
+            return out;
+        }
+        if dead_reckoning(last.state) {
+            if let Some(t0) = self.dropout_since.take()
+                && dt_ms <= th.max_gap_ms
+            {
+                let correction = norm(sub(f.pos, predict(&last, dt_ms as f32 / 1000.0)));
+                if correction > th.drift_m {
+                    out.push(Kind::Drift {
+                        meters: correction,
+                        secs: f.t_ms.saturating_sub(t0) as f32 / 1000.0,
+                    });
+                }
+            }
+            self.dropout_since = None;
+            self.last = Some(*f);
             return out;
         }
         if f.pos == last.pos && f.rot == last.rot {
@@ -140,12 +177,7 @@ impl DevDetect {
         }
         let dt = dt_ms as f32 / 1000.0;
 
-        let predicted = [
-            last.pos[0] + last.vel[0] * dt,
-            last.pos[1] + last.vel[1] * dt,
-            last.pos[2] + last.vel[2] * dt,
-        ];
-        let jvec = sub(f.pos, predicted);
+        let jvec = sub(f.pos, predict(&last, dt));
         let residual = norm(jvec);
         let accel = norm(sub(f.vel, last.vel)) / dt;
         if residual > th.jump_m || accel > th.accel_mps2 {
@@ -181,20 +213,6 @@ impl DevDetect {
             out.push(Kind::OrientationJump {
                 rad_per_s: ori_rate,
             });
-        }
-
-        if let Some((t0, p0, emitted)) = self.armed
-            && !emitted
-        {
-            let disp = norm(sub(f.pos, p0));
-            let held = f.t_ms.saturating_sub(t0);
-            if disp > th.drift_m && held > th.drift_min_ms {
-                out.push(Kind::Drift {
-                    meters: disp,
-                    secs: held as f32 / 1000.0,
-                });
-                self.armed = Some((t0, p0, true));
-            }
         }
 
         self.last = Some(*f);
@@ -262,20 +280,89 @@ mod tests {
         );
     }
 
+    fn dropout(t_ms: u64, pos: [f32; 3]) -> Frame {
+        let mut f = frame(t_ms, pos, [0.0; 3]);
+        f.state = TrackState::CalibratingOutOfRange;
+        f
+    }
+
     #[test]
-    fn drift_fires_during_optical_loss() {
+    fn drift_fires_on_reacquire_after_valid_dropout() {
         let th = Thresholds::default();
         let mut d = DevDetect::default();
         d.step(&frame(1000, [0.0, 1.0, 0.0], [0.0; 3]), &th);
-        for i in 1..100u64 {
-            let mut f = frame(1000 + i * 11, [i as f32 * 0.002, 1.0, 0.0], [0.0; 3]);
-            f.state = TrackState::FallbackRotationOnly;
-            let kinds = d.step(&f, &th);
-            if kinds.iter().any(|k| matches!(k, Kind::Drift { .. })) {
-                return;
-            }
+        d.step(&frame(1011, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        let mut t = 1011;
+        for i in 1..=60u64 {
+            t += 11;
+            let kinds = d.step(&dropout(t, [i as f32 * 0.004, 1.0, 0.0]), &th);
+            assert!(kinds.is_empty(), "{kinds:?}");
         }
-        panic!("drift never fired");
+        let kinds = d.step(&frame(t + 11, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        assert_eq!(kinds.len(), 1, "{kinds:?}");
+        let Kind::Drift { meters, secs } = kinds[0] else {
+            panic!("{kinds:?}");
+        };
+        assert!((meters - 0.24).abs() < 0.01, "{meters}");
+        assert!((secs - 0.66).abs() < 0.001, "{secs}");
+    }
+
+    #[test]
+    fn small_reacquire_correction_is_silent() {
+        let th = Thresholds::default();
+        let mut d = DevDetect::default();
+        d.step(&frame(1000, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        d.step(&frame(1011, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        d.step(&dropout(1022, [0.01, 1.0, 0.0]), &th);
+        let kinds = d.step(&frame(1033, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        assert!(kinds.is_empty(), "{kinds:?}");
+    }
+
+    #[test]
+    fn boot_calibration_is_not_a_dropout() {
+        let th = Thresholds::default();
+        let mut d = DevDetect::default();
+        d.step(&dropout(1000, [3.0, 1.0, 0.0]), &th);
+        d.step(&dropout(1011, [3.0, 1.0, 0.0]), &th);
+        let kinds = d.step(&frame(1022, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        assert!(kinds.is_empty(), "{kinds:?}");
+    }
+
+    #[test]
+    fn running_out_of_range_still_detects_jumps() {
+        let th = Thresholds::default();
+        let mut d = DevDetect::default();
+        let oor = |t: u64, x: f32| {
+            let mut f = frame(t, [x, 1.0, 0.0], [0.0; 3]);
+            f.state = TrackState::RunningOutOfRange;
+            f
+        };
+        d.step(&oor(1000, 0.0), &th);
+        d.step(&oor(1011, 0.0), &th);
+        let kinds = d.step(&oor(1022, 0.3), &th);
+        assert!(
+            kinds.iter().any(|k| matches!(k, Kind::Jump { .. })),
+            "{kinds:?}"
+        );
+    }
+
+    #[test]
+    fn parked_device_is_ignored() {
+        let th = Thresholds::default();
+        let mut d = DevDetect::default();
+        d.step(&frame(1000, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        d.step(&frame(1011, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        for (i, pos) in [[9001.0, 9001.0, 9001.0], [8913.0, 9001.0, 9001.0]]
+            .into_iter()
+            .enumerate()
+        {
+            let kinds = d.step(&frame(1022 + i as u64 * 11, pos, [0.0; 3]), &th);
+            assert!(kinds.is_empty(), "{kinds:?}");
+        }
+        let kinds = d.step(&frame(1044, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        assert!(kinds.is_empty(), "{kinds:?}");
+        let kinds = d.step(&frame(1055, [0.0, 1.0, 0.0], [0.0; 3]), &th);
+        assert!(kinds.is_empty(), "{kinds:?}");
     }
 
     #[test]

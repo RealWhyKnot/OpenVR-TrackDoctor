@@ -1,9 +1,10 @@
 use crate::correlate::{Correlator, Verdict};
-use crate::detect::{DevDetect, Frame, Thresholds};
+use crate::detect::{DevDetect, Frame, Thresholds, beyond_radius};
 use crate::event::{DeviceClass, Kind, SignalEvent, Source, TrackState};
 use crate::report::SessionWriter;
 use crate::signals::openvr::{DeviceMeta, FrameSample};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub enum Msg {
     Event(SignalEvent),
@@ -18,6 +19,7 @@ pub struct DevLive {
     pub state: TrackState,
     pub valid: bool,
     pub connected: bool,
+    pub parked: bool,
 }
 
 pub struct Engine {
@@ -83,12 +85,19 @@ impl Engine {
                 let Some(meta) = self.meta.get(&f.idx) else {
                     return emitted;
                 };
+                self.session.pose(&meta.serial, &f);
+                let parked = beyond_radius(f.pos, &self.thresholds);
+                let was_parked = self.live.get(&f.idx).is_some_and(|l| l.parked);
+                if parked != was_parked {
+                    self.correlator.set_parked(&meta.serial, parked);
+                }
                 self.live.insert(
                     f.idx,
                     DevLive {
                         state: f.state,
                         valid: f.valid,
                         connected: true,
+                        parked,
                     },
                 );
                 let run_detectors = match meta.class {
@@ -120,7 +129,8 @@ impl Engine {
                         continue;
                     }
                     let detail = kind.to_string();
-                    let ev = SignalEvent::new(Source::Api, Some(serial.clone()), kind, detail);
+                    let ev =
+                        SignalEvent::at(f.t_ms, Source::Api, Some(serial.clone()), kind, detail);
                     self.session.event(&ev);
                     self.correlator.ingest(&ev);
                     emitted.push(ev);
@@ -156,5 +166,9 @@ impl Engine {
             self.session.verdict(v);
         }
         verdicts
+    }
+
+    pub fn finish(&mut self) -> anyhow::Result<PathBuf> {
+        self.session.finish(&self.correlator.flap_summary())
     }
 }

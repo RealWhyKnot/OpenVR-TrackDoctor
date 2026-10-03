@@ -153,7 +153,8 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
                 } else {
                     Kind::DeviceDeactivated
                 };
-                let _ = tx.send(Msg::Event(SignalEvent::new(
+                let _ = tx.send(Msg::Event(SignalEvent::at(
+                    t,
                     Source::Api,
                     d.serial.clone(),
                     kind,
@@ -162,7 +163,8 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
                 d.connected = connected;
             }
             if valid != d.valid {
-                let _ = tx.send(Msg::Event(SignalEvent::new(
+                let _ = tx.send(Msg::Event(SignalEvent::at(
+                    t,
                     Source::Api,
                     d.serial.clone(),
                     Kind::PoseValid(valid),
@@ -175,7 +177,8 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
                     from: d.state,
                     to: state,
                 };
-                let _ = tx.send(Msg::Event(SignalEvent::new(
+                let _ = tx.send(Msg::Event(SignalEvent::at(
+                    t,
                     Source::Api,
                     d.serial.clone(),
                     kind.clone(),

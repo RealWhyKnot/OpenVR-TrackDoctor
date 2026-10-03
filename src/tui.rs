@@ -1,5 +1,6 @@
 use crate::engine::{Engine, Msg};
 use crate::event::{Kind, TrackState, now_ms};
+use crate::report::incident;
 use crossterm::event::{Event, KeyCode};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
@@ -62,7 +63,13 @@ pub fn run(
             }
             for v in engine.tick(now_ms()) {
                 feed.push_back((
-                    format!("{} -> {:?} ({:?})", v.device, v.cause, v.confidence),
+                    format!(
+                        "{} -> {:?} ({:?}){}",
+                        v.device,
+                        v.cause,
+                        v.confidence,
+                        incident(&v)
+                    ),
                     2,
                 ));
                 feed.push_back((format!("  {}", v.cause.describe()), 0));
@@ -86,6 +93,10 @@ pub fn run(
                             "disconnected".to_string(),
                             Style::default().fg(Color::DarkGray),
                         ),
+                        Some(l) if l.parked => (
+                            "parked, ignored".to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Some(l) => {
                             let color = match l.state {
                                 TrackState::RunningOk => Color::Green,
@@ -107,11 +118,13 @@ pub fn run(
                         m.battery_pct
                             .map(|b| format!("{b:.0}%"))
                             .unwrap_or_default(),
+                        engine.correlator.flap_count(&m.serial).to_string(),
                     ])
                     .style(style)
                 })
                 .collect();
 
+            let written_kb = engine.session.bytes_written() as f64 / 1024.0;
             terminal.draw(|f| {
                 let [header, table_area, feed_area] = Layout::vertical([
                     Constraint::Length(1),
@@ -122,7 +135,7 @@ pub fn run(
 
                 f.render_widget(
                     Paragraph::new(format!(
-                        "trackdoctor | {status} | session {} | q quits",
+                        "trackdoctor | {status} | session {} ({written_kb:.1} KB written) | q quits",
                         session_dir.display()
                     )),
                     header,
@@ -138,11 +151,13 @@ pub fn run(
                             Constraint::Length(5),
                             Constraint::Length(12),
                             Constraint::Length(5),
+                            Constraint::Length(6),
                         ],
                     )
                     .header(
                         Row::new(vec![
                             "serial", "class", "model", "state", "valid", "dongle", "batt",
+                            "flaps",
                         ])
                         .style(Style::default().fg(Color::Cyan)),
                     )
@@ -180,7 +195,7 @@ pub fn run(
     })();
 
     ratatui::restore();
-    match engine.session.finish() {
+    match engine.finish() {
         Ok(path) => println!("report: {}", path.display()),
         Err(e) => eprintln!("report write failed: {e}"),
     }

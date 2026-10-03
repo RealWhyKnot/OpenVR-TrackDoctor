@@ -42,6 +42,10 @@ pub enum Kind {
     StandbyStart,
     StandbyEnd,
     OpticalLoss {
+        base: Option<String>,
+        outage_ms: u64,
+    },
+    CalibrationFailed {
         base: String,
         outage_ms: u64,
     },
@@ -56,7 +60,15 @@ pub enum Kind {
     ImuOffScale,
     BootstrapFail,
     OotxSelected,
-    LeavingStandby,
+    DevicePowerOff,
+    ImuHidError,
+    BaseMoved {
+        base: String,
+        mm: u32,
+        deg: f32,
+    },
+    BaseMovedForTracking,
+    OvrRecenter,
     BaseLaserFault {
         base: String,
     },
@@ -143,13 +155,6 @@ impl TrackState {
             Self::Other(v)
         }
     }
-
-    pub fn is_calibrating(self) -> bool {
-        matches!(
-            self,
-            Self::CalibratingInProgress | Self::CalibratingOutOfRange
-        )
-    }
 }
 
 pub fn now_ms() -> u64 {
@@ -166,8 +171,18 @@ impl SignalEvent {
         kind: Kind,
         detail: impl Into<String>,
     ) -> Self {
+        Self::at(now_ms(), source, device, kind, detail)
+    }
+
+    pub fn at(
+        t_ms: u64,
+        source: Source,
+        device: Option<String>,
+        kind: Kind,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
-            t_ms: now_ms(),
+            t_ms,
             source,
             device,
             kind,

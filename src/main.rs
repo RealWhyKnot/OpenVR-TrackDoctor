@@ -13,7 +13,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let poses = args.iter().any(|a| a == "--poses");
+    args.retain(|a| a != "--poses");
     match args.first().map(String::as_str) {
         Some("report") => {
             let path = args
@@ -23,10 +25,10 @@ fn main() -> anyhow::Result<()> {
             print!("{}", report::render_file(&path)?);
             Ok(())
         }
-        Some("dump") => run(true),
-        None => run(false),
+        Some("dump") => run(true, poses),
+        None => run(false, poses),
         Some(other) => Err(anyhow::anyhow!(
-            "unknown command '{other}'; usage: trackdoctor [dump | report <verdicts.jsonl>]"
+            "unknown command '{other}'; usage: trackdoctor [dump] [--poses] | report <verdicts.jsonl>"
         )),
     }
 }
@@ -74,8 +76,8 @@ fn shutdown_flag() -> Arc<AtomicBool> {
     flag
 }
 
-fn run(dump: bool) -> anyhow::Result<()> {
-    let session = report::SessionWriter::new()?;
+fn run(dump: bool, poses: bool) -> anyhow::Result<()> {
+    let session = report::SessionWriter::new(poses)?;
     let session_dir = session.dir().to_path_buf();
     let mut engine = Engine::new(session);
     let (tx, rx) = mpsc::channel();
@@ -109,7 +111,7 @@ fn run(dump: bool) -> anyhow::Result<()> {
                 println!("VERDICT {}", serde_json::to_string(&v)?);
             }
         }
-        let path = engine.session.finish()?;
+        let path = engine.finish()?;
         println!("report: {}", path.display());
         Ok(())
     } else {
