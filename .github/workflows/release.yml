@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (for example v0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish ${{ inputs.tag || github.ref_name }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+(\.\d+)?(-beta)?)$') { throw "tag $env:RELEASE_TAG is not vMAJOR.MINOR.PATCH" }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$($Matches[1])"
+          $pre = 'false'
+          if ($env:RELEASE_TAG -like '*-beta') { $pre = 'true' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "prerelease=$pre"
+
+      - name: Test
+        shell: pwsh
+        run: |
+          cargo test
+          if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $want = 'v3.12'
+          $have = ''
+          $exe = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          if (Test-Path -LiteralPath $exe) { $have = (& $exe /VERSION) }
+          if ($have -ne $want) {
+            choco install nsis --version 3.12.0 --force -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco install nsis failed ($LASTEXITCODE)" }
+          }
+
+      - name: Build installer
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.tag.outputs.version }}'
+          ./installer/build.ps1 -Version $version
+          $name = "TrackDoctor-Setup-$version.exe"
+          $setup = "target/installer/$name"
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$setup.sha256", "$hash  $name`n", (New-Object System.Text.UTF8Encoding($false)))
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "setup=$setup"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "name=$name"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha256=$hash"
+
+      - name: Installer smoke test
+        shell: pwsh
+        run: ./.github/scripts/Test-Installer.ps1 -Setup '${{ steps.package.outputs.setup }}' -Version '${{ steps.tag.outputs.version }}'
+
+      - name: Publish release
+        shell: pwsh
+        run: |
+          $notes = "Run ``${{ steps.package.outputs.name }}`` to install. TrackDoctor then starts with SteamVR on its own.`n`nSHA256 ``${{ steps.package.outputs.sha256 }}``"
+          $extra = @()
+          if ('${{ steps.tag.outputs.prerelease }}' -eq 'true') { $extra = @('--prerelease', '--latest=false') }
+          gh release create $env:RELEASE_TAG '${{ steps.package.outputs.setup }}' '${{ steps.package.outputs.setup }}.sha256' --repo '${{ github.repository }}' --title $env:RELEASE_TAG --notes $notes @extra
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
