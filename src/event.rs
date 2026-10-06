@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SignalEvent {
     pub t_ms: u64,
     pub source: Source,
@@ -10,7 +10,7 @@ pub struct SignalEvent {
     pub detail: String,
 }
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Api,
     Log,
@@ -19,7 +19,7 @@ pub enum Source {
     Probe,
 }
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceClass {
     Hmd,
     Controller,
@@ -28,7 +28,7 @@ pub enum DeviceClass {
     Other,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Kind {
     DeviceActivated,
     DeviceDeactivated,
@@ -102,6 +102,11 @@ pub enum Kind {
     BatteryLevel {
         pct: f32,
     },
+    RadioGap {
+        dongle: String,
+        ms: u64,
+    },
+    Parked(bool),
 }
 
 impl std::fmt::Display for Kind {
@@ -121,12 +126,17 @@ impl std::fmt::Display for Kind {
             Kind::PoseFrozen { ms } => write!(f, "pose frozen for {ms}ms while reported valid"),
             Kind::BatteryLevel { pct } => write!(f, "battery {pct:.0}%"),
             Kind::TrackingState { from, to } => write!(f, "tracking {from:?} -> {to:?}"),
+            Kind::RadioGap { dongle, ms } => {
+                write!(f, "radio silent for {ms} ms on dongle {dongle}")
+            }
+            Kind::Parked(true) => write!(f, "parked far outside the play space, ignored"),
+            Kind::Parked(false) => write!(f, "back inside the play space"),
             k => write!(f, "{k:?}"),
         }
     }
 }
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackState {
     Uninitialized,
     CalibratingInProgress,
@@ -153,6 +163,18 @@ impl TrackState {
             Self::FallbackRotationOnly
         } else {
             Self::Other(v)
+        }
+    }
+
+    pub fn plain(self) -> String {
+        match self {
+            Self::Uninitialized => "starting".into(),
+            Self::CalibratingInProgress => "calibrating".into(),
+            Self::CalibratingOutOfRange => "searching for bases".into(),
+            Self::RunningOk => "tracking".into(),
+            Self::RunningOutOfRange => "out of range".into(),
+            Self::FallbackRotationOnly => "rotation only".into(),
+            Self::Other(v) => format!("state {v}"),
         }
     }
 }

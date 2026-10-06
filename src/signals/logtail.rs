@@ -27,6 +27,7 @@ struct Patterns {
     recenter: Regex,
     laser_fault: Regex,
     no_optical: Regex,
+    radio_gap: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -64,6 +65,8 @@ fn patterns() -> &'static Patterns {
         laser_fault: Regex::new(r"Basestation (\S+) sending strong signals from one laser")
             .unwrap(),
         no_optical: Regex::new(r"No optical frames in past").unwrap(),
+        radio_gap: Regex::new(r"lighthouse: ([0-9A-Fa-f]{10}): Packet received after ([\d.]+)s")
+            .unwrap(),
     })
 }
 
@@ -82,14 +85,24 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 const QUARTER_HOUR_MS: i64 = 15 * 60 * 1000;
 
-fn stamp_ms(c: &regex::Captures, read_ms: u64) -> Option<u64> {
+fn naive_of(c: &regex::Captures) -> Option<i64> {
     let month = MONTHS.iter().position(|m| *m == &c[1])? as i64 + 1;
     let n = |i: usize| c[i].parse::<i64>().ok();
     let days = days_from_civil(n(3)?, month, n(2)?);
-    let naive = days * 86_400_000 + n(4)? * 3_600_000 + n(5)? * 60_000 + n(6)? * 1000 + n(7)?;
-    let offset = (read_ms as i64 - naive + QUARTER_HOUR_MS / 2).div_euclid(QUARTER_HOUR_MS)
-        * QUARTER_HOUR_MS;
-    u64::try_from(naive + offset).ok()
+    Some(days * 86_400_000 + n(4)? * 3_600_000 + n(5)? * 60_000 + n(6)? * 1000 + n(7)?)
+}
+
+pub fn naive_ms(line: &str) -> Option<i64> {
+    naive_of(&patterns().stamp.captures(line)?)
+}
+
+pub fn utc_offset(utc_ms: u64, naive: i64) -> i64 {
+    (utc_ms as i64 - naive + QUARTER_HOUR_MS / 2).div_euclid(QUARTER_HOUR_MS) * QUARTER_HOUR_MS
+}
+
+fn stamp_ms(c: &regex::Captures, read_ms: u64) -> Option<u64> {
+    let naive = naive_of(c)?;
+    u64::try_from(naive + utc_offset(read_ms, naive)).ok()
 }
 
 pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
@@ -168,7 +181,11 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
     } else if p.no_optical.is_match(msg) {
         Kind::NoOpticalFrames
     } else {
-        return None;
+        let c = p.radio_gap.captures(msg)?;
+        Kind::RadioGap {
+            dongle: c[1].to_string(),
+            ms: (c[2].parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u64,
+        }
     };
     Some(SignalEvent::at(
         t_ms,
@@ -179,27 +196,36 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
     ))
 }
 
-pub fn vrserver_log_path() -> PathBuf {
-    let fallback = PathBuf::from(r"C:\Program Files (x86)\Steam\logs\vrserver.txt");
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-        return fallback;
-    };
+fn vrpath_dir(key: &str) -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
     let vrpath = PathBuf::from(local).join(r"openvr\openvrpaths.vrpath");
-    let Ok(text) = std::fs::read_to_string(vrpath) else {
-        return fallback;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return fallback;
-    };
-    let dir = match &json["log"] {
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(vrpath).ok()?).ok()?;
+    let dir = match &json[key] {
         serde_json::Value::Array(a) => a.first().and_then(|v| v.as_str()),
         serde_json::Value::String(s) => Some(s.as_str()),
         _ => None,
-    };
-    match dir {
-        Some(d) => PathBuf::from(d).join("vrserver.txt"),
-        None => fallback,
-    }
+    }?;
+    Some(PathBuf::from(dir))
+}
+
+pub fn vrserver_log_path() -> PathBuf {
+    vrpath_dir("log")
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)\Steam\logs"))
+        .join("vrserver.txt")
+}
+
+pub fn lighthouse_model(serial: &str) -> Option<(String, String)> {
+    let path = vrpath_dir("config")?
+        .join("lighthouse")
+        .join(serial.to_ascii_lowercase())
+        .join("config.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    Some((
+        json["model_number"].as_str()?.to_string(),
+        json["device_class"].as_str().unwrap_or("").to_string(),
+    ))
 }
 
 pub struct LogTail {
@@ -461,6 +487,28 @@ mod tests {
                 "Fri Oct 02 2026 19:18:53.360 [Info] - lighthouse: LHR-10268F5C C: No optical frames in past 5 seconds"
             ),
             Kind::NoOpticalFrames
+        );
+    }
+
+    #[test]
+    fn steamvr_2_16_radio_gap_lines() {
+        let ev = parse(
+            "Tue Oct 06 2026 19:38:27.394 [Info] - lighthouse: D373DE2627: Packet received after 4.131s, keepalive (0/1)",
+        );
+        assert_eq!(ev.device, None);
+        assert_eq!(
+            ev.kind,
+            Kind::RadioGap {
+                dongle: "D373DE2627".into(),
+                ms: 4131
+            }
+        );
+        assert!(
+            parse_line(
+                "Tue Oct 06 2026 19:38:24.448 [Info] - lighthouse: D373DE2627: Triggered keepalive (succeeded)",
+                0
+            )
+            .is_none()
         );
     }
 

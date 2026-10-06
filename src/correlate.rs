@@ -79,6 +79,8 @@ pub struct FlapStats {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct FlapSummary {
     pub threshold_ms: u64,
+    #[serde(default)]
+    pub start_ms: u64,
     pub span_ms: u64,
     pub devices: BTreeMap<String, FlapStats>,
 }
@@ -216,6 +218,10 @@ impl Correlator {
         }
     }
 
+    pub fn parked(&self) -> &HashSet<String> {
+        &self.parked
+    }
+
     pub fn flap_count(&self, serial: &str) -> u64 {
         self.flaps.get(serial).map_or(0, |f| f.count)
     }
@@ -223,6 +229,7 @@ impl Correlator {
     pub fn flap_summary(&self) -> FlapSummary {
         FlapSummary {
             threshold_ms: self.flap_ms,
+            start_ms: self.first_ms,
             span_ms: self.last_ms.saturating_sub(self.first_ms),
             devices: self.flaps.clone(),
         }
@@ -283,6 +290,10 @@ impl Correlator {
             return;
         };
         match &ev.kind {
+            Kind::Parked(parked) => {
+                self.set_parked(&device, *parked);
+                return;
+            }
             Kind::PoseValid(valid) => {
                 self.pose_changed(device, *valid);
                 return;
@@ -700,6 +711,7 @@ fn decide(case: &Case, w: &Window, hmd: Option<&str>, hi: u64, near_ms: u64) -> 
                     | Kind::DongleBind { .. }
                     | Kind::DeviceDeactivated
                     | Kind::BatteryLevel { .. }
+                    | Kind::RadioGap { .. }
             )
         });
         let t_dc = w
@@ -1695,6 +1707,29 @@ mod tests {
             ],
         );
         assert!(v.is_empty(), "{v:?}");
+    }
+
+    #[test]
+    fn parked_event_parks_and_unparks() {
+        let mut c = warmed();
+        let v = run_with(
+            &mut c,
+            vec![
+                ev(T0 - 5, Source::Api, Some(DEV), Kind::Parked(true), "parked"),
+                state_drop(T0, DEV),
+                pose(T0 + 10, DEV, false),
+            ],
+        );
+        assert!(v.is_empty(), "{v:?}");
+        assert!(c.parked().contains(DEV));
+        c.ingest(&ev(
+            T0 + 300_000,
+            Source::Api,
+            Some(DEV),
+            Kind::Parked(false),
+            "back",
+        ));
+        assert!(c.parked().is_empty());
     }
 
     #[test]

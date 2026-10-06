@@ -38,6 +38,7 @@ struct DevState {
     serial: Option<String>,
     battery_pct: Option<f32>,
     interesting: bool,
+    base: bool,
 }
 
 impl Default for DevState {
@@ -49,11 +50,13 @@ impl Default for DevState {
             serial: None,
             battery_pct: None,
             interesting: false,
+            base: false,
         }
     }
 }
 
 const BATTERY_POLL_TICKS: u32 = 5400;
+const BASE_FRAME_TICKS: u32 = 90;
 
 pub fn run(tx: Sender<Msg>) {
     loop {
@@ -73,9 +76,10 @@ pub fn run(tx: Sender<Msg>) {
         };
         session(&ctx, &tx);
         drop(ctx);
-        if tx
-            .send(Msg::Status("SteamVR exited; waiting for restart".into()))
-            .is_err()
+        if tx.send(Msg::SteamVrExited).is_err()
+            || tx
+                .send(Msg::Status("SteamVR exited; waiting for restart".into()))
+                .is_err()
         {
             return;
         }
@@ -115,7 +119,7 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
                 Event::WirelessReconnect => Some(Kind::WirelessReconnect),
                 Event::EnterStandbyMode => Some(Kind::StandbyStart),
                 Event::LeaveStandbyMode => Some(Kind::StandbyEnd),
-                Event::Quit(_) | Event::ProcessQuit(_) | Event::DriverRequestedQuit => {
+                Event::Quit(_) => {
                     system.acknowledge_quit_exiting();
                     return;
                 }
@@ -137,6 +141,7 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
         let t = now_ms();
         tick = tick.wrapping_add(1);
         let poll_battery = tick.is_multiple_of(BATTERY_POLL_TICKS);
+        let base_frame = tick.is_multiple_of(BASE_FRAME_TICKS);
         for i in 0..MAX_TRACKED_DEVICE_COUNT {
             let d = &mut devs[i];
             if !d.interesting {
@@ -211,7 +216,7 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
                     }
                 }
             }
-            if connected {
+            if connected && (!d.base || base_frame) {
                 let m = raw.mDeviceToAbsoluteTracking.m;
                 let av = raw.vAngularVelocity.v;
                 let _ = tx.send(Msg::Frame(FrameSample {
@@ -230,6 +235,26 @@ fn session(ctx: &openvr::Context, tx: &Sender<Msg>) {
     }
 }
 
+pub fn list_devices() -> Option<Vec<DeviceMeta>> {
+    let ctx = unsafe { openvr::init(ApplicationType::Background) }.ok()?;
+    let system = ctx.system().ok()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    for i in 0..MAX_TRACKED_DEVICE_COUNT {
+        if system.is_tracked_device_connected(TrackedDeviceIndex(i as u32)) {
+            announce(&system, i, &mut DevState::default(), &tx);
+        }
+    }
+    drop(tx);
+    Some(
+        rx.into_iter()
+            .filter_map(|m| match m {
+                Msg::Device(d) => Some(d),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
 fn prop(system: &openvr::System, i: usize, p: openvr::TrackedDeviceProperty) -> String {
     system
         .string_tracked_device_property(TrackedDeviceIndex(i as u32), p)
@@ -246,6 +271,7 @@ fn announce(system: &openvr::System, i: usize, d: &mut DevState, tx: &Sender<Msg
         _ => DeviceClass::Other,
     };
     d.interesting = class != DeviceClass::Other;
+    d.base = class == DeviceClass::TrackingReference;
     if !d.interesting {
         return;
     }
