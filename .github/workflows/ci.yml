@@ -3,6 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
   workflow_dispatch:
 
@@ -15,19 +19,38 @@ permissions:
 
 jobs:
   test:
+    name: Lint, build and test
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Workflow syntax
+        uses: RealWhyKnot/workflows/workflow-syntax@v1
+
+      - name: Rust components
+        shell: pwsh
+        run: |
+          rustup component add rustfmt clippy
+          if ($LASTEXITCODE -ne 0) { throw "rustup component add failed ($LASTEXITCODE)" }
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
 
   installer:
+    name: Installer
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Install NSIS
         shell: pwsh
@@ -43,8 +66,21 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: ./installer/build.ps1 -Version 0.0.0-ci
+        run: |
+          $global:LASTEXITCODE = 0
+          & ./installer/build.ps1 -Version 0.0.0.0-CI
+          if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed ($LASTEXITCODE)" }
 
-      - name: Install and uninstall
+      - name: Installer smoke test
         shell: pwsh
-        run: ./.github/scripts/Test-Installer.ps1 -Setup target/installer/TrackDoctor-Setup-0.0.0-ci.exe -Version 0.0.0-ci
+        run: |
+          ./.github/scripts/Test-Installer.ps1 -Setup target/installer/OpenVR-TrackDoctor-Setup-0.0.0.0-CI.exe -Version 0.0.0.0-CI
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: trackdoctor-${{ github.sha }}
+          path: |
+            target/installer/OpenVR-TrackDoctor-Setup-0.0.0.0-CI.exe
+            target/installer/OpenVR-TrackDoctor-0.0.0.0-CI.zip
+          retention-days: 14
