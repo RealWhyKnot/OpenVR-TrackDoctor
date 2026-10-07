@@ -38,7 +38,12 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(code)
         }
         Some("help" | "--help" | "-h" | "/?") => {
+            println!("TrackDoctor {}\n", trackdoctor::VERSION);
             print!("{HELP}");
+            Ok(())
+        }
+        Some("version" | "--version" | "-V") => {
+            println!("TrackDoctor {}", trackdoctor::VERSION);
             Ok(())
         }
         Some(other) => Err(anyhow::anyhow!("unknown command '{other}'\n\n{HELP}")),

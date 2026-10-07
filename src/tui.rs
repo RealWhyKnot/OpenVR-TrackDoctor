@@ -263,7 +263,8 @@ fn draw(f: &mut Frame, engine: &Engine, ui: &Ui, elapsed_ms: u64) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                "| {} | recording {} | {} | {:.0} KB saved",
+                "{} | {} | recording {} | {} | {:.0} KB saved",
+                crate::VERSION,
                 ui.status,
                 fmt_dur(elapsed_ms),
                 summary::plural(incidents, "incident"),

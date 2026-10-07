@@ -10,3 +10,8 @@ pub mod signals;
 pub mod summary;
 pub mod tui;
 pub mod win;
+
+pub const VERSION: &str = match option_env!("TRACKDOCTOR_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};

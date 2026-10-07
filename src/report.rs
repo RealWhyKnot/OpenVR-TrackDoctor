@@ -301,7 +301,10 @@ pub fn compose(engine: &Engine, s: &Summary) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let flaps = engine.correlator.flap_summary();
-    let mut out = format!("TrackDoctor report, {name}\n\n== Summary ==\n");
+    let mut out = format!(
+        "TrackDoctor {} report, {name}\n\n== Summary ==\n",
+        crate::VERSION
+    );
     out.push_str(&summary::render(s));
 
     out.push_str("\n== USB connections ==\n");
