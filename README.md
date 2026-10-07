@@ -10,7 +10,7 @@ Download `OpenVR-TrackDoctor-Setup-<version>.exe` from the [releases page](https
 
 `trackdoctor autostart off` stops it starting with SteamVR, and `trackdoctor autostart on` turns that back on.
 
-To uninstall, use Windows Settings, Apps, or the "Uninstall TrackDoctor" Start menu entry. It removes the SteamVR registration and asks whether to delete your recorded sessions too.
+To uninstall, use Windows Settings, Apps, or the "Uninstall TrackDoctor" Start menu entry. It removes the SteamVR registration and offers to delete your recorded sessions too.
 
 ## After a VR session
 
@@ -34,7 +34,7 @@ Run TrackDoctor from the Start menu to watch while you play. Tab, or the keys 1 
 
 Press n to name your devices (left foot, waist and so on). Notepad opens a text file that lists every serial, and the names show up as soon as you save. Press q to stop. TrackDoctor prints the summary and saves the full report.
 
-If TrackDoctor is already recording in the background (it starts with SteamVR), the live view tells you, and you'll end up with two folders for the same session.
+If the background recorder is already running, the live view warns that the session is being recorded twice, and you'll end up with two folders for it.
 
 ## Commands
 
@@ -50,7 +50,7 @@ trackdoctor dump                raw signal stream, for debugging
 
 Add `--poses` to the live view or `dump` to also save `poses.csv` (about 10 rows per second per device).
 
-`report` re-reads the saved events with the current rules. A fix to the rules applies to old sessions too.
+`report` re-reads the saved events with the current rules, not the ones from when the session was recorded.
 
 ## What it saves
 
