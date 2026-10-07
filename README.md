@@ -6,7 +6,7 @@ After a session it ranks every tracker and controller by how much time it spent 
 
 ## Install
 
-Download `TrackDoctor-Setup-<version>.exe` from the [releases page](https://github.com/RealWhyKnot/OpenVR-TrackDoctor/releases) and run it. It installs for your Windows user only (no admin prompt) and registers with SteamVR as a startup app. From then on it starts by itself whenever SteamVR starts, records in the background without a window, and stops when SteamVR closes.
+Download `OpenVR-TrackDoctor-Setup-<version>.exe` from the [releases page](https://github.com/RealWhyKnot/OpenVR-TrackDoctor/releases) and run it. It installs for your Windows user only (no admin prompt) and registers with SteamVR as a startup app. From then on it starts by itself whenever SteamVR starts, records in the background without a window, and stops when SteamVR closes.
 
 `trackdoctor autostart off` stops it starting with SteamVR, and `trackdoctor autostart on` turns that back on.
 
@@ -64,4 +64,6 @@ Each verdict carries a confidence: confident, likely or unsure. Confident means 
 
 ## Build from source
 
-Needs Rust (stable) on Windows. `cargo build --release` builds `trackdoctor.exe` and `trackdoctor-bg.exe` (the windowless background recorder). `installer\build.ps1` builds the installer into `target\installer\`; it needs [NSIS](https://nsis.sourceforge.io) installed.
+Needs Rust (stable) on Windows. `cargo build --release` builds `trackdoctor.exe` and `trackdoctor-bg.exe` (the windowless background recorder). `installer\build.ps1` builds the installer and a portable zip into `target\installer\`; it needs [NSIS](https://nsis.sourceforge.io) installed.
+
+Releases are tagged `vYYYY.M.D.N`, with `-beta` for the nightly prereleases. Pushing a tag builds and publishes the installer and the zip.
