@@ -7,7 +7,7 @@ Unicode true
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
-InstallDir "$LOCALAPPDATA\Programs\TrackDoctor"
+InstallDir "$LOCALAPPDATA\Programs\OpenVR-TrackDoctor"
 InstallDirRegKey HKCU "${ARPKEY}" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
