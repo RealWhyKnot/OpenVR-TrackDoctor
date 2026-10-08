@@ -12,6 +12,8 @@ Download `OpenVR-TrackDoctor-Setup-<version>.exe` from the [releases page](https
 
 To uninstall, use Windows Settings, Apps, or the "Uninstall TrackDoctor" Start menu entry. It removes the SteamVR registration and offers to delete your recorded sessions too.
 
+The live view checks the releases page while it runs. A newer version gets a line in the feed, and after you press q you're asked to update: yes, no, or skip that version. `trackdoctor update` checks on demand. An installed copy updates by running the new setup once SteamVR and TrackDoctor are closed. A copy from the zip swaps in the new exes, and the recorder moves to them the next time SteamVR starts.
+
 ## After a VR session
 
 Open "TrackDoctor last session report" from the Start menu. It shows a ranked table like this one:
@@ -45,6 +47,7 @@ trackdoctor report --full       same, plus every incident with its evidence
 trackdoctor report --log FILE   re-read a saved vrserver.txt into an older session
 trackdoctor usb                 USB layout of your dongles
 trackdoctor autostart on|off|status
+trackdoctor update              check for a newer release and install it
 trackdoctor dump                raw signal stream, for debugging
 ```
 

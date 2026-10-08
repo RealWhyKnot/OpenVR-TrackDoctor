@@ -10,11 +10,13 @@ TrackDoctor finds out why your SteamVR trackers and controllers glitch.
   trackdoctor usb                 which USB controller and port each dongle is on
   trackdoctor autostart on|off    record automatically whenever SteamVR runs
   trackdoctor autostart status    show whether auto-start is on
+  trackdoctor update              check for a newer release and install it
   trackdoctor dump                raw signal stream, for debugging
   add --poses to the live view or dump to also save poses.csv (~10 Hz per device)
 ";
 
 fn main() -> anyhow::Result<()> {
+    trackdoctor::update::cleanup_old();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let poses = args.iter().any(|a| a == "--poses");
     let full = args.iter().any(|a| a == "--full");
@@ -33,6 +35,7 @@ fn main() -> anyhow::Result<()> {
         Some("report") => app::report(args.get(1).map(String::as_str), full, log.as_deref()),
         Some("usb") => app::usb_layout(),
         Some("dump") => app::dump(poses),
+        Some("update") => trackdoctor::update::command(),
         Some("autostart") => {
             let code = app::autostart(args.get(1).map(String::as_str))?;
             std::process::exit(code)

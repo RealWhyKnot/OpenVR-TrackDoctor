@@ -136,6 +136,7 @@ pub fn background() -> anyhow::Result<()> {
 
 pub fn live(poses: bool) -> anyhow::Result<()> {
     win::install_handlers();
+    crate::update::spawn_check();
     let engine = Engine::new(SessionWriter::new(poses)?, Names::load_default());
     let (tx, rx) = mpsc::channel();
     spawn_collectors(tx);
@@ -154,6 +155,9 @@ pub fn live(poses: bool) -> anyhow::Result<()> {
         }
         Ok(None) => println!("Nothing was recorded: SteamVR never connected."),
         Err(e) => eprintln!("Could not write the report: {e}"),
+    }
+    if let Some(release) = crate::update::found() {
+        crate::update::offer(&release, true);
     }
     win::pause_if_own_console();
     Ok(())

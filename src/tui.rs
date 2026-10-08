@@ -155,6 +155,7 @@ pub fn run(mut engine: Engine, rx: Receiver<Msg>, note: Option<String>) -> anyho
     let mut next_tick = 0u64;
     let mut next_names = 0u64;
     let mut last_draw: Option<Instant> = None;
+    let mut update_noted = false;
 
     let result = (|| -> anyhow::Result<()> {
         loop {
@@ -205,6 +206,16 @@ pub fn run(mut engine: Engine, rx: Receiver<Msg>, note: Option<String>) -> anyho
                 engine.snapshot(now);
                 for n in std::mem::take(&mut engine.notices) {
                     ui.push(n, Level::Warn);
+                }
+                if !update_noted && let Some(release) = crate::update::found() {
+                    update_noted = true;
+                    let version = release
+                        .version()
+                        .map_or(release.tag_name.clone(), |v| v.to_string());
+                    ui.push(
+                        format!("TrackDoctor {version} is available. Press q when you're done and you'll be asked to update."),
+                        Level::Good,
+                    );
                 }
             }
             if now >= next_names {
