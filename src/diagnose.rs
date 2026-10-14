@@ -288,7 +288,7 @@ impl Diagnosis {
                         },
                         plural(self.late_moves.len(), "big move"),
                     ),
-                    "Fix: close SteamVR, rename lighthousedb.json in Steam\\config\\lighthouse to keep it as a backup, then start SteamVR with every base in its final place.",
+                    "Fix: once every base is in its final place, run trackdoctor resetmap. It keeps the old map as a backup and has SteamVR build a new one.",
                 )]
             }
             Rule::BoardFault => self
@@ -368,7 +368,7 @@ impl Diagnosis {
                     };
                     finding(
                         format!("{what} SteamVR logs this when a base loses power or gets bumped."),
-                        "Fix: check its power plug and adapter and that nothing knocks it. If it moved, reset the base map.",
+                        "Fix: check its power plug and adapter and that nothing knocks it. If it moved, run trackdoctor resetmap.",
                     )
                 })
                 .collect(),

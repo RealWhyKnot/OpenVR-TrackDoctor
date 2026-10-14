@@ -167,13 +167,28 @@ pub fn live(poses: bool) -> anyhow::Result<()> {
     if win::closing() {
         return Ok(());
     }
+    let s = engine.summary();
     match path {
         Ok(Some(p)) => {
-            print!("{}", summary::render(&engine.summary()));
+            print!("{}", summary::render(&s));
             println!("\nFull report: {}", p.display());
         }
         Ok(None) => println!("Nothing was recorded: SteamVR never connected."),
         Err(e) => eprintln!("Could not write the report: {e}"),
+    }
+    if s.diagnosis
+        .iter()
+        .any(|f| f.rule == crate::diagnose::Rule::StaleMap)
+    {
+        println!(
+            "\nSteamVR's base station map looks out of date. {}",
+            crate::resetmap::explain(crate::resetmap::steamvr_running())
+        );
+        if crate::resetmap::confirm("Reset it now?")
+            && let Err(e) = crate::resetmap::run(true)
+        {
+            eprintln!("{e:#}");
+        }
     }
     if let Some(release) = crate::update::found() {
         crate::update::offer(&release, true);

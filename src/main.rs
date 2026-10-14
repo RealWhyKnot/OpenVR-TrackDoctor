@@ -9,6 +9,7 @@ TrackDoctor finds out why your SteamVR trackers and controllers glitch.
   trackdoctor report --log FILE   re-read a saved vrserver.txt into an older session
   trackdoctor usb                 which USB controller and port each dongle is on
   trackdoctor bases               how much SteamVR moved each base station, session by session
+  trackdoctor resetmap            back up SteamVR's base station map and let it build a new one
   trackdoctor autostart on|off    record automatically whenever SteamVR runs
   trackdoctor autostart status    show whether auto-start is on
   trackdoctor update              check for a newer release and install it
@@ -36,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         Some("report") => app::report(args.get(1).map(String::as_str), full, log.as_deref()),
         Some("usb") => app::usb_layout(),
         Some("bases") => app::bases(),
+        Some("resetmap") => trackdoctor::resetmap::command(),
         Some("dump") => app::dump(poses),
         Some("update") => trackdoctor::update::command(),
         Some("autostart") => {

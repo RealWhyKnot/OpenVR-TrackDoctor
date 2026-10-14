@@ -8,6 +8,7 @@ pub mod engine;
 pub mod event;
 pub mod names;
 pub mod report;
+pub mod resetmap;
 pub mod signals;
 pub mod summary;
 pub mod tui;

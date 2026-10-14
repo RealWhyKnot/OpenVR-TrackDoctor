@@ -31,7 +31,36 @@ mod ffi {
             add: i32,
         ) -> i32;
         pub fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        pub fn GetLocalTime(time: *mut SystemTime);
     }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct SystemTime {
+        pub year: u16,
+        pub month: u16,
+        pub day_of_week: u16,
+        pub day: u16,
+        pub hour: u16,
+        pub minute: u16,
+        pub second: u16,
+        pub ms: u16,
+    }
+}
+
+#[cfg(windows)]
+pub fn local_stamp() -> String {
+    let mut t = ffi::SystemTime::default();
+    unsafe { ffi::GetLocalTime(&mut t) };
+    format!(
+        "{:04}-{:02}-{:02}-{:02}{:02}",
+        t.year, t.month, t.day, t.hour, t.minute
+    )
+}
+
+#[cfg(not(windows))]
+pub fn local_stamp() -> String {
+    crate::event::now_ms().to_string()
 }
 
 #[cfg(windows)]

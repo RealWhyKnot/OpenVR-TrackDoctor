@@ -36,6 +36,8 @@ Above the table, "What went wrong" lists the problems TrackDoctor can pin down f
 
 The live view also puts each one in its feed the moment it shows up.
 
+When the map is out of date, `trackdoctor resetmap` resets it. It asks first, because it closes SteamVR and whatever game is running. It then renames `lighthousedb.json` to a dated backup and starts SteamVR again, which works out where the bases are in a minute or two. Do it once every base is where it'll stay. If the live view flagged the map, pressing q offers the same reset. To undo it, close SteamVR and rename the backup back to `lighthousedb.json`.
+
 Under the table is a short list of things to try for each kind of problem, then the USB layout of your dongles.
 
 Near the end, the base stations section counts how often SteamVR moved each base in its map during the session, the biggest move, and how many of those moves it also applied to live tracking. Those are the pops where everything jumps at once. A base that never stops moving is usually loose, sits on something that flexes, or was re-aimed while SteamVR still had its old position saved.
@@ -59,6 +61,7 @@ trackdoctor report --full       same, plus every incident with its evidence
 trackdoctor report --log FILE   re-read a saved vrserver.txt into an older session
 trackdoctor usb                 USB layout of your dongles
 trackdoctor bases               how much SteamVR moved each base station, session by session
+trackdoctor resetmap            back up SteamVR's base station map and let it build a new one
 trackdoctor autostart on|off|status
 trackdoctor update              check for a newer release and install it
 trackdoctor dump                raw signal stream, for debugging
@@ -72,7 +75,7 @@ Add `--poses` to the live view or `dump` to also save `poses.csv` (about 10 rows
 
 Everything stays on your PC, in `%LOCALAPPDATA%\trackdoctor`. Each session gets a folder under `sessions\` with `events.jsonl` (every signal), `verdicts.jsonl`, `devices.json`, `usb.json`, `bases.json` and `report.txt`. The report is rewritten every 30 seconds while recording. If TrackDoctor crashes or you close the window, the last copy is still there. Your device names are in `names.txt`.
 
-It reads SteamVR's `vrserver.txt` log, its per-device config files and its saved base station map, `lighthousedb.json`. It doesn't write to SteamVR's files, apart from registering itself as a startup app.
+It reads SteamVR's `vrserver.txt` log, its per-device config files and its saved base station map, `lighthousedb.json`. It doesn't write to SteamVR's files, apart from registering itself as a startup app and renaming the map when you ask it to reset it.
 
 ## Reading verdicts
 

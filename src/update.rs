@@ -199,7 +199,7 @@ pub fn cleanup_old() {
 }
 
 #[cfg(windows)]
-fn system_tool(exe: &str) -> Command {
+pub(crate) fn system_tool(exe: &str) -> Command {
     let path = match std::env::var_os("SystemRoot") {
         Some(root) => PathBuf::from(root).join("System32").join(exe),
         None => PathBuf::from(exe),
@@ -208,7 +208,7 @@ fn system_tool(exe: &str) -> Command {
 }
 
 #[cfg(not(windows))]
-fn system_tool(exe: &str) -> Command {
+pub(crate) fn system_tool(exe: &str) -> Command {
     Command::new(exe)
 }
 
