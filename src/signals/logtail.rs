@@ -37,6 +37,7 @@ struct Patterns {
     channel_conflict: Regex,
     rotor_phase: Regex,
     relationship: Regex,
+    startup: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -92,6 +93,7 @@ fn patterns() -> &'static Patterns {
             r"RELATIONSHIP bases ([0-9A-Fa-f]+) <-> ([0-9A-Fa-f]+) distance ([\d.]+)m, angle ([\d.]+) deg",
         )
         .unwrap(),
+        startup: Regex::new(r"^vrserver \S+ startup with PID=").unwrap(),
     })
 }
 
@@ -229,6 +231,8 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
         }
     } else if p.rotor_phase.is_match(msg) {
         Kind::RotorPhase
+    } else if p.startup.is_match(msg) {
+        Kind::LogRotated
     } else if let Some(c) = p.relationship.captures(msg) {
         Kind::BaseRelation {
             a: c[1].to_ascii_uppercase(),
@@ -314,7 +318,9 @@ impl LogTail {
             return out;
         };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut rotated = false;
         if len < self.pos {
+            rotated = true;
             self.pos = 0;
             self.partial.clear();
             out.push(SignalEvent::new(
@@ -340,6 +346,10 @@ impl LogTail {
         while let Some(nl) = self.partial.find('\n') {
             let line: String = self.partial.drain(..=nl).collect();
             if let Some(ev) = parse_line(line.trim_end(), read_ms) {
+                if rotated && ev.kind == Kind::LogRotated {
+                    rotated = false;
+                    continue;
+                }
                 out.push(ev);
             }
         }
@@ -719,6 +729,22 @@ mod tests {
         let events = tail.poll();
         assert_eq!(events[0].kind, Kind::LogRotated);
         assert_eq!(events[1].kind, Kind::SyncAcquired);
+
+        let startup = "Wed Oct 14 2026 00:48:36.216 [Info] - vrserver 2.18.3 startup with PID=77016, config=C:\\Program Files (x86)\\Steam\\config";
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{startup}").unwrap();
+        drop(f);
+        let events = tail.poll();
+        assert_eq!(events.len(), 1, "a restart appended to the same file");
+        assert_eq!(events[0].kind, Kind::LogRotated);
+
+        std::fs::write(&path, format!("{startup}\n")).unwrap();
+        let events = tail.poll();
+        assert_eq!(events.len(), 1, "a rotated file is one restart, not two");
+        assert_eq!(events[0].kind, Kind::LogRotated);
         let _ = std::fs::remove_file(&path);
     }
 }
