@@ -10,6 +10,7 @@ pub const BOARD_FAULTS: usize = 3;
 pub const EPISODE_MS: u64 = 1000;
 pub const SYNC_WINDOW_MS: u64 = 10 * 60_000;
 pub const SYNC_BURST: usize = 20;
+pub const RELOCK_MS: u64 = 3 * 60_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule {
@@ -107,6 +108,7 @@ pub struct Diagnosis {
     takeovers: Vec<Takeover>,
     sync: BTreeMap<String, usize>,
     sync_times: Vec<u64>,
+    sync_all: Vec<u64>,
     sync_total: usize,
     sync_peak: usize,
     channels: BTreeMap<u32, usize>,
@@ -195,6 +197,7 @@ impl Diagnosis {
                 }
                 self.sync_total += 1;
                 self.sync_times.push(ev.t_ms);
+                self.sync_all.push(ev.t_ms);
                 self.sync_peak = self.sync_peak.max(burst(&self.sync_times, SYNC_WINDOW_MS));
             }
             Kind::ChannelConflict { ch } => *self.channels.entry(*ch).or_default() += 1,
@@ -225,6 +228,25 @@ impl Diagnosis {
 
     fn turned(&self) -> Vec<Turned> {
         self.relations.turned_bases()
+    }
+
+    fn after_restart(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for &t in &self.sync_all {
+            let Some(base) = self.resets.iter().find_map(|(b, times)| {
+                times
+                    .iter()
+                    .any(|r| t >= r.t_ms && t - r.t_ms <= RELOCK_MS)
+                    .then_some(b)
+            }) else {
+                continue;
+            };
+            match out.iter_mut().find(|(b, _)| b == base) {
+                Some(o) => o.1 += 1,
+                None => out.push((base.clone(), 1)),
+            }
+        }
+        out
     }
 
     fn bind(&mut self, dev: &str, dongle: &str, stamp: Stamp) {
@@ -460,15 +482,29 @@ impl Diagnosis {
                     .take(4)
                     .map(|(d, n)| format!("{n} on {}", label(d)))
                     .collect();
+                let restarts = self.after_restart();
+                let relock: usize = restarts.iter().map(|r| r.1).sum();
+                let after = match restarts.as_slice() {
+                    [] => String::new(),
+                    [(b, n)] => format!(
+                        " {n} of them came within 3 minutes of base {b} restarting, while trackers locked back on to it."
+                    ),
+                    many => format!(
+                        " {relock} of them came within 3 minutes of bases {} restarting, while trackers locked back on to them.",
+                        join(&many.iter().map(|r| r.0.clone()).collect::<Vec<_>>())
+                    ),
+                };
                 let fix = if self.active().contains(&Rule::StaleMap) {
                     "Fix: reset the base map first; these bursts came with it. If they keep coming after that, look for mirrors, windows or glossy surfaces the bases can see."
+                } else if relock * 2 >= total {
+                    "Fix: keep the restarting base powered steadily. Check its plug and adapter, and that nothing knocks it."
                 } else {
                     "Fix: look for mirrors, windows or glossy surfaces the bases can see and cover them one at a time."
                 };
                 vec![finding(
                     "",
                     format!(
-                        "SteamVR couldn't match a light sync to the base it expected {} ({}), up to {} within 10 minutes.",
+                        "SteamVR couldn't match a light sync to the base it expected {} ({}), up to {} within 10 minutes. It logs this when a base's sync arrives more than 1 ms earlier or later than its last frame predicted.{after}",
                         plural(total, "time"),
                         list.join(", "),
                         self.sync_peak
@@ -863,6 +899,43 @@ mod tests {
             f.what
         );
         assert!(f.fix.starts_with("Fix: look for mirrors"));
+    }
+
+    #[test]
+    fn sync_bursts_after_a_base_restart_point_at_its_power() {
+        let mut d = Diagnosis::default();
+        feed(
+            &mut d,
+            &ev(
+                T0,
+                None,
+                Kind::BaseReset {
+                    base: "9417E0B3".into(),
+                },
+            ),
+        );
+        for i in 0..20 {
+            feed(
+                &mut d,
+                &ev(T0 + 5000 + i * 1000, Some("LHR-A"), Kind::SyncMismatch),
+            );
+        }
+        feed(
+            &mut d,
+            &ev(T0 + 10 * 60_000, Some("LHR-A"), Kind::SyncMismatch),
+        );
+        let f = d
+            .findings(&label)
+            .into_iter()
+            .find(|f| f.rule == Rule::SyncMismatch)
+            .unwrap();
+        assert!(
+            f.what
+                .ends_with("20 of them came within 3 minutes of base 9417E0B3 restarting, while trackers locked back on to it."),
+            "{}",
+            f.what
+        );
+        assert!(f.fix.starts_with("Fix: keep the restarting base powered"));
     }
 
     #[test]
