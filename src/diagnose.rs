@@ -1,4 +1,4 @@
-use crate::bases::{SETTLE_MS, is_big, short_serial};
+use crate::bases::{Relations, SETTLE_MS, Turned, is_big, short_serial};
 use crate::event::{Kind, SignalEvent, Source};
 use crate::signals::logtail::naive_ms;
 use crate::summary::plural;
@@ -14,6 +14,7 @@ pub const SYNC_BURST: usize = 20;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule {
     StaleMap,
+    BaseTurned,
     BoardFault,
     Takeover,
     BaseRestart,
@@ -110,6 +111,7 @@ pub struct Diagnosis {
     sync_peak: usize,
     channels: BTreeMap<u32, usize>,
     rotor: usize,
+    relations: Relations,
     fired: BTreeSet<(Rule, String)>,
 }
 
@@ -126,6 +128,7 @@ fn burst(times: &[u64], window_ms: u64) -> usize {
 
 impl Diagnosis {
     pub fn ingest(&mut self, ev: &SignalEvent) -> bool {
+        self.relations.ingest(ev);
         if ev.kind == Kind::LogRotated {
             self.run_start = None;
             self.run += 1;
@@ -196,6 +199,7 @@ impl Diagnosis {
             }
             Kind::ChannelConflict { ch } => *self.channels.entry(*ch).or_default() += 1,
             Kind::RotorPhase => self.rotor += 1,
+            Kind::BaseRelation { .. } => {}
             _ => return false,
         }
         true
@@ -217,6 +221,10 @@ impl Diagnosis {
             .iter()
             .filter(|m| per_run[&m.3] >= STALE_MOVES)
             .collect()
+    }
+
+    fn turned(&self) -> Vec<Turned> {
+        self.relations.turned_bases()
     }
 
     fn bind(&mut self, dev: &str, dongle: &str, stamp: Stamp) {
@@ -258,6 +266,9 @@ impl Diagnosis {
         let mut out = Vec::new();
         if !self.stale_moves().is_empty() {
             out.push(Rule::StaleMap);
+        }
+        if !self.turned().is_empty() {
+            out.push(Rule::BaseTurned);
         }
         if self.faulty_boards().next().is_some() {
             out.push(Rule::BoardFault);
@@ -322,10 +333,16 @@ impl Diagnosis {
                 } else {
                     String::new()
                 };
+                let turned: Vec<String> = self.turned().into_iter().map(|t| t.base).collect();
+                let culprit = match turned.as_slice() {
+                    [] => " SteamVR moves whichever base sits farther from the origin base, so the one that shifted may be another.".to_string(),
+                    [one] => format!(" Base {one} is the one that shifted."),
+                    many => format!(" Bases {} are the ones that shifted.", join(many)),
+                };
                 vec![finding(
                     "",
                     format!(
-                        "Base map out of date: more than 10 minutes in, SteamVR was still moving {} in its saved map ({}, up to {max} mm{last}).{after}{refused} A base was moved, re-aimed or bumped while SteamVR kept its old position, or one sits loose and keeps shifting.",
+                        "Base map out of date: more than 10 minutes in, SteamVR was still moving {} in its saved map ({}, up to {max} mm{last}).{after}{refused} A base was moved, re-aimed or bumped while SteamVR kept its old position, or one sits loose and keeps shifting.{culprit}",
                         if bases.len() == 1 {
                             format!("base {}", bases[0])
                         } else {
@@ -336,6 +353,17 @@ impl Diagnosis {
                     "Fix: once every base is in its final place, run trackdoctor resetmap. It keeps the old map as a backup and has SteamVR build a new one.",
                 )]
             }
+            Rule::BaseTurned => self
+                .turned()
+                .into_iter()
+                .map(|t| {
+                    finding(
+                        &t.base,
+                        format!("{} Its mount is probably sagging, or it got knocked.", t.what()),
+                        "Fix: tighten its mount or move it somewhere solid, then run trackdoctor resetmap.",
+                    )
+                })
+                .collect(),
             Rule::BoardFault => self
                 .faulty_boards()
                 .map(|(dev, b)| {
@@ -597,6 +625,71 @@ mod tests {
 
     fn rules(d: &Diagnosis) -> Vec<Rule> {
         d.findings(&label).iter().map(|f| f.rule).collect()
+    }
+
+    fn relations(d: &mut Diagnosis, t0: u64, turn: f32) -> Vec<Rule> {
+        let rel = |a: &str, b: &str, mm: u32, deg: f32| Kind::BaseRelation {
+            a: a.into(),
+            b: b.into(),
+            mm,
+            deg,
+        };
+        let mut fired = Vec::new();
+        for (i, (a, b, mm, deg)) in [
+            ("C538EFC9", "9417E0B3", 3530, 121.7),
+            ("9417E0B3", "9D8DEA7B", 2430, 62.8),
+            ("C538EFC9", "9D8DEA7B", 4270, 58.3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (late, d0) in [(false, 0.0), (true, turn)] {
+                for k in 0..2 {
+                    let t = t0 + u64::from(late) * 20 * 60_000 + k * 60_000 + i as u64;
+                    let deg = if b == "9D8DEA7B" && a == "C538EFC9" {
+                        deg
+                    } else {
+                        deg + d0
+                    };
+                    fired.extend(feed(d, &ev(t, Some("LHR-A"), rel(a, b, mm, deg))));
+                }
+            }
+        }
+        fired
+    }
+
+    #[test]
+    fn a_turned_base_is_named_once_and_in_the_stale_map_finding() {
+        let mut d = Diagnosis::default();
+        feed(&mut d, &moved(T0, 10));
+        assert!(relations(&mut d, T0, 2.0).is_empty());
+        let mut d = Diagnosis::default();
+        feed(&mut d, &moved(T0, 10));
+        assert_eq!(relations(&mut d, T0, 5.0), vec![Rule::BaseTurned]);
+        for i in 0..3 {
+            feed(&mut d, &moved(T0 + 30 * 60_000 + i, 200));
+        }
+        let f = d.findings(&label);
+        assert!(
+            f[0].what
+                .ends_with("Base 9417E0B3 is the one that shifted."),
+            "{}",
+            f[0].what
+        );
+        assert!(
+            f[1].what.starts_with("Base 9417E0B3 turned about 5 deg"),
+            "{}",
+            f[1].what
+        );
+        feed(&mut d, &ev(T0 + 40 * 60_000, None, Kind::LogRotated));
+        assert!(relations(&mut d, T0 + 41 * 60_000, 8.0).is_empty());
+        let turned: Vec<Finding> = d
+            .findings(&label)
+            .into_iter()
+            .filter(|f| f.rule == Rule::BaseTurned)
+            .collect();
+        assert_eq!(turned.len(), 1);
+        assert!(turned[0].what.contains("about 8 deg"), "{}", turned[0].what);
     }
 
     #[test]

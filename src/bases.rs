@@ -53,9 +53,208 @@ pub fn short_serial(serial: &str) -> String {
         .to_ascii_uppercase()
 }
 
+pub const TURN_DEG: f64 = 3.0;
+pub const SHIFT_MM: f64 = 50.0;
+pub const HELD_DEG: f64 = 1.5;
+pub const HELD_MM: f64 = 30.0;
+const REL_WINDOW_MS: u64 = 5 * 60_000;
+const REL_SPAN_MS: u64 = 10 * 60_000;
+const REL_MIN: usize = 3;
+const REL_LATE_MIN: usize = 2;
+const REL_PAIRS_MIN: usize = 2;
+
+type Sample = (u64, u32, f32);
+
+#[derive(Clone, Debug, Default)]
+pub struct Relations {
+    run: usize,
+    pairs: BTreeMap<(usize, String, String), Vec<Sample>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Turned {
+    pub run: usize,
+    pub base: String,
+    pub deg: f64,
+    pub mm: f64,
+    pub against: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PairChange {
+    Shifted(f64, f64),
+    Held,
+    Unclear,
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
+}
+
+fn change(seen: &[Sample]) -> PairChange {
+    let (Some(first), Some(last)) = (
+        seen.iter().map(|s| s.0).min(),
+        seen.iter().map(|s| s.0).max(),
+    ) else {
+        return PairChange::Unclear;
+    };
+    let early: Vec<_> = seen
+        .iter()
+        .filter(|s| s.0 <= first + REL_WINDOW_MS)
+        .collect();
+    let late: Vec<_> = seen
+        .iter()
+        .filter(|s| s.0 + REL_WINDOW_MS >= last && s.0 >= first + REL_SPAN_MS)
+        .collect();
+    if late.len() < REL_LATE_MIN || early.len() + late.len() < REL_MIN {
+        return PairChange::Unclear;
+    }
+    let mid = |v: &[&Sample]| {
+        (
+            median(v.iter().map(|s| f64::from(s.1)).collect()),
+            median(v.iter().map(|s| f64::from(s.2)).collect()),
+        )
+    };
+    let ((mm0, deg0), (mm1, deg1)) = (mid(&early), mid(&late));
+    let mm = (mm1 - mm0).abs();
+    let d = (deg1 - deg0).abs() % 360.0;
+    let deg = d.min(360.0 - d);
+    if deg >= TURN_DEG || mm >= SHIFT_MM {
+        PairChange::Shifted(deg, mm)
+    } else if deg < HELD_DEG && mm < HELD_MM {
+        PairChange::Held
+    } else {
+        PairChange::Unclear
+    }
+}
+
+impl Relations {
+    pub fn ingest(&mut self, ev: &SignalEvent) {
+        match &ev.kind {
+            Kind::LogRotated => self.run += 1,
+            Kind::BaseRelation { a, b, mm, deg } => {
+                let (a, b) = (short_serial(a), short_serial(b));
+                let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                self.pairs
+                    .entry((self.run, a, b))
+                    .or_default()
+                    .push((ev.t_ms, *mm, *deg));
+            }
+            _ => {}
+        }
+    }
+
+    pub fn turned(&self) -> Vec<Turned> {
+        let mut runs: BTreeMap<usize, Vec<(&str, &str, PairChange)>> = BTreeMap::new();
+        for ((run, a, b), seen) in &self.pairs {
+            runs.entry(*run)
+                .or_default()
+                .push((a.as_str(), b.as_str(), change(seen)));
+        }
+        let mut out = Vec::new();
+        for (run, pairs) in runs {
+            let shifted: Vec<_> = pairs
+                .iter()
+                .filter_map(|(a, b, c)| match c {
+                    PairChange::Shifted(deg, mm) => Some((*a, *b, *deg, *mm)),
+                    _ => None,
+                })
+                .collect();
+            let held: Vec<_> = pairs
+                .iter()
+                .filter(|p| p.2 == PairChange::Held)
+                .map(|p| (p.0, p.1))
+                .collect();
+            let Some(&(a0, b0, _, _)) = shifted.first() else {
+                continue;
+            };
+            if shifted.len() < REL_PAIRS_MIN {
+                continue;
+            }
+            let found: Vec<&str> = [a0, b0]
+                .into_iter()
+                .filter(|x| shifted.iter().all(|s| s.0 == *x || s.1 == *x))
+                .filter(|x| held.iter().any(|h| h.0 != *x && h.1 != *x))
+                .collect();
+            let [base] = found[..] else {
+                continue;
+            };
+            let turns: Vec<f64> = shifted
+                .iter()
+                .map(|s| s.2)
+                .filter(|d| *d >= TURN_DEG)
+                .collect();
+            out.push(Turned {
+                run,
+                base: base.to_string(),
+                deg: if turns.is_empty() {
+                    0.0
+                } else {
+                    turns.iter().sum::<f64>() / turns.len() as f64
+                },
+                mm: shifted
+                    .iter()
+                    .map(|s| s.3)
+                    .filter(|m| *m >= SHIFT_MM)
+                    .fold(0.0, f64::max),
+                against: shifted
+                    .iter()
+                    .map(|s| if s.0 == base { s.1 } else { s.0 }.to_string())
+                    .collect(),
+            });
+        }
+        out
+    }
+
+    pub fn turned_bases(&self) -> Vec<Turned> {
+        let mut out: Vec<Turned> = Vec::new();
+        for t in self.turned() {
+            match out.iter_mut().find(|o| o.base == t.base) {
+                Some(o) if o.size() >= t.size() => {}
+                Some(o) => *o = t,
+                None => out.push(t),
+            }
+        }
+        out
+    }
+}
+
+impl Turned {
+    fn size(&self) -> f64 {
+        self.deg.max(self.mm / 10.0)
+    }
+
+    pub fn amount(&self) -> String {
+        let mut parts = Vec::new();
+        if self.deg > 0.0 {
+            parts.push(format!("turned about {:.0} deg", self.deg));
+        }
+        if self.mm > 0.0 {
+            parts.push(format!("shifted about {:.0} mm", self.mm));
+        }
+        parts.join(" and ")
+    }
+
+    pub fn what(&self) -> String {
+        format!(
+            "Base {} {} while SteamVR was running: its angle or distance to {} changed, while pairs without it held still.",
+            self.base,
+            self.amount(),
+            names(&self.against)
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BaseMoves {
     pub bases: BTreeMap<String, MoveStats>,
+    pub relations: Relations,
     last_move: Option<(u64, String)>,
     run_start: Option<u64>,
 }
@@ -68,6 +267,7 @@ pub struct FirstBigMove {
 
 impl BaseMoves {
     pub fn ingest(&mut self, ev: &SignalEvent) -> Option<FirstBigMove> {
+        self.relations.ingest(ev);
         if ev.source == Source::Log {
             if ev.kind == Kind::LogRotated {
                 self.run_start = None;
@@ -333,8 +533,8 @@ pub fn warnings(moves: &BaseMoves, db: &[BaseRecord]) -> Vec<String> {
 
 fn verdict(s: &MoveStats, origin: bool) -> &'static str {
     match (s.steadiness(), origin) {
-        (Steadiness::Shifting, _) if s.big > 1 => "kept moving: check its mount and power plug",
-        (Steadiness::Shifting, _) => "one big move: check its mount if it happens again",
+        (Steadiness::Shifting, _) if s.big > 1 => "kept moving in the map",
+        (Steadiness::Shifting, _) => "one big move in the map",
         (Steadiness::Settling, _) => "moved while SteamVR was starting, then held",
         (Steadiness::Small, _) => "small corrections",
         (Steadiness::Steady, true) => "steady (SteamVR's origin, never moved)",
@@ -390,14 +590,11 @@ pub fn section(moves: &BaseMoves, db: &[BaseRecord], seen: &[String]) -> String 
             verdict(st, origin(s))
         ));
     }
-    let shifting = moves.shifting().len();
-    if let Some(o) = serials.iter().find(|s| origin(s))
-        && shifting >= 2
-        && shifting * 2 > serials.len() - 1
-    {
-        out.push_str(&format!(
-            "SteamVR never moves {o}, its origin base. When most of the others keep moving, {o} may be the loose one.\n"
-        ));
+    if !moves.shifting().is_empty() {
+        out.push_str("SteamVR always moves the base that sits farther from the origin base, so the base it moves isn't always the one that shifted.\n");
+    }
+    for t in moves.relations.turned_bases() {
+        out.push_str(&format!("{} Check its mount.\n", t.what()));
     }
 
     let with_runs: Vec<&BaseRecord> = db.iter().filter(|b| b.runs.len() >= 2).collect();
@@ -422,7 +619,7 @@ pub fn section(moves: &BaseMoves, db: &[BaseRecord], seen: &[String]) -> String 
 
 pub fn notice(m: &FirstBigMove) -> String {
     format!(
-        "SteamVR moved base {} by {} mm and {:.1} deg in its map. If this keeps happening, check its mount and power plug.",
+        "SteamVR moved base {} by {} mm and {:.1} deg in its map. It moves whichever base sits farther from the origin base, so another base may be the one that shifted. If this keeps happening, check every base's mount.",
         m.base, m.mm, m.deg
     )
 }
@@ -445,7 +642,9 @@ pub fn scan_session(dir: &Path) -> Option<SessionMoves> {
     let mut moves = BaseMoves::default();
     let mut offset_ms = None;
     for line in text.lines() {
-        let wanted = line.contains("BaseMoved") || line.contains("LogRotated");
+        let wanted = line.contains("BaseMoved")
+            || line.contains("BaseRelation")
+            || line.contains("LogRotated");
         if !wanted && offset_ms.is_some() {
             continue;
         }
@@ -559,6 +758,16 @@ pub fn render_history(history: &[SessionMoves], db: &[BaseRecord]) -> String {
                 out.push_str(&format!(" {cell:>13}"));
             }
             out.push('\n');
+        }
+        for h in history {
+            let offset = h.offset_ms.or(fallback).unwrap_or(0);
+            for t in h.moves.relations.turned_bases() {
+                out.push_str(&format!(
+                    " {}: {}\n",
+                    fmt_stamp(h.start_ms as i64 + offset, true),
+                    t.what()
+                ));
+            }
         }
     }
     let with_runs: Vec<&BaseRecord> = db.iter().filter(|b| b.runs.len() >= 2).collect();
@@ -725,6 +934,72 @@ mod tests {
         assert!(w[1].contains("C538EFC9 (code 4)"), "{w:?}");
     }
 
+    fn rel(a: &str, b: &str, mm: u32, deg: f32) -> Kind {
+        Kind::BaseRelation {
+            a: a.into(),
+            b: b.into(),
+            mm,
+            deg,
+        }
+    }
+
+    fn measure(m: &mut BaseMoves, t: u64, turn: f32) {
+        log(m, t, rel("C538EFC9", "9417e0b3", 4270, 121.7 - turn));
+        log(m, t + 1, rel("9417E0B3", "9D8DEA7B", 3100, 62.8 + turn));
+        log(m, t + 2, rel("C538EFC9", "9d8dea7b", 2900, 58.3));
+        log(m, t + 3, rel("C538EFC9", "b394a63c", 2400, 58.3));
+        log(m, t + 4, rel("9D8DEA7B", "B394A63C", 3500, 95.0));
+    }
+
+    #[test]
+    fn the_base_in_every_changed_pair_is_the_one_that_turned() {
+        let mut m = settled();
+        for i in 0..3 {
+            measure(&mut m, i * 60_000, 0.0);
+        }
+        assert!(m.relations.turned().is_empty());
+        for i in 0..3 {
+            measure(&mut m, 20 * 60_000 + i * 60_000, 5.0);
+        }
+        let t = m.relations.turned();
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(t[0].base, "9417E0B3");
+        assert!((t[0].deg - 5.0).abs() < 0.01, "{t:?}");
+        assert_eq!(t[0].mm, 0.0);
+        assert_eq!(t[0].against, vec!["9D8DEA7B", "C538EFC9"]);
+        assert!(
+            t[0].what()
+                .starts_with("Base 9417E0B3 turned about 5 deg while SteamVR was running: its angle or distance to 9D8DEA7B and C538EFC9 changed"),
+            "{}",
+            t[0].what()
+        );
+    }
+
+    #[test]
+    fn a_new_run_or_a_lone_changed_pair_names_no_base() {
+        let mut m = settled();
+        for i in 0..3 {
+            measure(&mut m, i * 60_000, 0.0);
+        }
+        log(&mut m, 15 * 60_000, Kind::LogRotated);
+        for i in 0..3 {
+            measure(&mut m, 20 * 60_000 + i * 60_000, 5.0);
+        }
+        assert!(m.relations.turned().is_empty());
+
+        let mut m = settled();
+        for (t, d) in [
+            (0, 0.0),
+            (60_000, 0.0),
+            (20 * 60_000, 6.0),
+            (21 * 60_000, 6.0),
+        ] {
+            log(&mut m, t, rel("C538EFC9", "9417E0B3", 4270, 121.7 + d));
+            log(&mut m, t + 1, rel("9D8DEA7B", "B394A63C", 3500, 95.0));
+        }
+        assert!(m.relations.turned().is_empty());
+    }
+
     #[test]
     fn unreadable_db_gives_nothing() {
         assert!(parse_db("not json").is_empty());
@@ -732,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn section_ranks_shifting_bases_first_and_points_at_the_origin() {
+    fn section_ranks_shifting_bases_first_and_marks_the_origin() {
         let mut m = settled();
         log(&mut m, S, moved("9D8DEA7B", 92, 1.2));
         log(&mut m, S + 10, moved("9417E0B3", 138, 2.2));
@@ -753,7 +1028,7 @@ mod tests {
             rows[4].contains("C538EFC9") && rows[4].contains("origin"),
             "{text}"
         );
-        assert!(text.contains("C538EFC9 may be the loose one"), "{text}");
+        assert!(text.contains("isn't always the one that shifted"), "{text}");
         assert!(text.contains("9417E0B3   3.4 deg  changed"), "{text}");
 
         let w = warnings(&m, &[]);

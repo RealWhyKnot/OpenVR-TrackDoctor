@@ -36,6 +36,7 @@ struct Patterns {
     db_disallowed: Regex,
     channel_conflict: Regex,
     rotor_phase: Regex,
+    relationship: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -87,6 +88,10 @@ fn patterns() -> &'static Patterns {
         db_disallowed: Regex::new(r"disallowed by LighthouseDB").unwrap(),
         channel_conflict: Regex::new(r"sync on beam channel conflict on ch (\d+)").unwrap(),
         rotor_phase: Regex::new(r"Rotors on basestation out of 180-degree phase lock").unwrap(),
+        relationship: Regex::new(
+            r"RELATIONSHIP bases ([0-9A-Fa-f]+) <-> ([0-9A-Fa-f]+) distance ([\d.]+)m, angle ([\d.]+) deg",
+        )
+        .unwrap(),
     })
 }
 
@@ -224,6 +229,13 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
         }
     } else if p.rotor_phase.is_match(msg) {
         Kind::RotorPhase
+    } else if let Some(c) = p.relationship.captures(msg) {
+        Kind::BaseRelation {
+            a: c[1].to_ascii_uppercase(),
+            b: c[2].to_ascii_uppercase(),
+            mm: (c[3].parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u32,
+            deg: c[4].parse().unwrap_or(0.0),
+        }
     } else {
         let c = p.radio_gap.captures(msg)?;
         Kind::RadioGap {
@@ -635,6 +647,19 @@ mod tests {
             .kind,
             Kind::RotorPhase
         );
+        let rel = parse(
+            "Tue Oct 13 2026 23:28:35.152 [Info] - lighthouse: LHR-A66FAA1B C: ----- RELATIONSHIP bases C538EFC9 <-> b394a63c distance 2.40m, angle 58.31 deg -----",
+        );
+        assert_eq!(rel.device.as_deref(), Some("LHR-A66FAA1B"));
+        assert_eq!(
+            rel.kind,
+            Kind::BaseRelation {
+                a: "C538EFC9".into(),
+                b: "B394A63C".into(),
+                mm: 2400,
+                deg: 58.31,
+            }
+        );
     }
 
     #[test]
@@ -659,7 +684,6 @@ mod tests {
     #[test]
     fn unrelated_lines_ignored() {
         for line in [
-            "Fri Oct 02 2026 19:53:20.406 [Info] - lighthouse: LHR-617D30D7 C: ----- RELATIONSHIP bases 9D8DEA7B <-> c538efc9 distance 4.27m, angle 176.06 deg -----",
             "Fri Oct 02 2026 19:25:47.916 [Info] - lighthouse: LHR-FD4FF7E2 C: Trying to add a secondary base 9D8DEA7B: Not enough contiguous samples for a bootstrap pose",
             "Fri Oct 02 2026 20:21:16.199 [Info] - lighthouse: LHR-A43A0229 C: Resetting tracking: IMU misalignment unreasonably large (-9.8, -3.7, -13) deg sigma 1.3",
             "Tue Sep 09 2026 - vrserver: some unrelated chatter",

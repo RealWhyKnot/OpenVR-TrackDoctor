@@ -123,6 +123,12 @@ pub enum Kind {
         ch: u32,
     },
     RotorPhase,
+    BaseRelation {
+        a: String,
+        b: String,
+        mm: u32,
+        deg: f32,
+    },
 }
 
 impl std::fmt::Display for Kind {

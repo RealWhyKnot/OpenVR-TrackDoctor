@@ -935,7 +935,12 @@ fn decide(case: &Case, w: &Window, hmd: Option<&str>, hi: u64, near_ms: u64) -> 
         );
     }
 
-    let evidence: Vec<String> = w.mine.iter().map(|e| fmt_evidence(e, w.t_open)).collect();
+    let evidence: Vec<String> = w
+        .mine
+        .iter()
+        .filter(|e| !matches!(e.kind, Kind::BaseRelation { .. }))
+        .map(|e| fmt_evidence(e, w.t_open))
+        .collect();
     verdict(Cause::Unknown, Confidence::Low, evidence, vec![])
 }
 

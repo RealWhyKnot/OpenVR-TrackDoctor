@@ -176,10 +176,12 @@ pub fn live(poses: bool) -> anyhow::Result<()> {
         Ok(None) => println!("Nothing was recorded: SteamVR never connected."),
         Err(e) => eprintln!("Could not write the report: {e}"),
     }
-    if s.diagnosis
-        .iter()
-        .any(|f| f.rule == crate::diagnose::Rule::StaleMap)
-    {
+    if s.diagnosis.iter().any(|f| {
+        matches!(
+            f.rule,
+            crate::diagnose::Rule::StaleMap | crate::diagnose::Rule::BaseTurned
+        )
+    }) {
         println!(
             "\nSteamVR's base station map looks out of date. {}",
             crate::resetmap::explain(crate::resetmap::steamvr_running())

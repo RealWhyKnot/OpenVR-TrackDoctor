@@ -29,6 +29,7 @@ Session length 2h 13m. Worst first, ranked by time spent not tracking.
 Above the table, "What went wrong" lists the problems TrackDoctor can pin down from SteamVR's log, each with what to do about it:
 
 - the base station map is out of date (SteamVR is still moving bases in it ten minutes in)
+- a base station turned or shifted while SteamVR was running
 - a tracker stops answering: its dongle gets radio data but can't reach the main board, SteamVR can't read its config, or its IMU data stops
 - one device took over another one's dongle
 - a base station restarted
@@ -38,13 +39,15 @@ Above the table, "What went wrong" lists the problems TrackDoctor can pin down f
 
 The map check ignores SteamVR's first ten minutes, because it always nudges the bases a bit while it settles in.
 
+SteamVR's own log is misleading about which base moved. When two bases disagree, it always moves whichever one sits farther from the origin base, so the base it names often isn't the one that shifted. To find the real one, I look at the distance and angle between each pair of bases, which SteamVR logs whenever a tracker gets a good look at both. When a base turns, at least two of its pairs change while the pairs without it stay put, and that's the base I name.
+
 The live view also puts each one in its feed the moment it shows up.
 
 When the map is out of date, `trackdoctor resetmap` resets it. It asks first, because it closes SteamVR and whatever game is running. It then renames `lighthousedb.json` to a dated backup and starts SteamVR again, which works out where the bases are in a minute or two. Do it once every base is where it'll stay. SteamVR treats the new map as a new room, so if your headset tracks with base stations you may have to run Room Setup again. If the live view flagged the map, pressing q offers the same reset. To undo it, close SteamVR and rename the backup back to `lighthousedb.json`.
 
 Under the table is a short list of things to try for each kind of problem, then the USB layout of your dongles.
 
-Near the end, the base stations section counts how often SteamVR moved each base in its map during the session, the biggest move, and how many of those moves it also applied to live tracking. Those are the pops where everything jumps at once. A base that never stops moving is usually loose, sits on something that flexes, or was re-aimed while SteamVR still had its old position saved.
+Near the end, the base stations section counts how often SteamVR moved each base in its map during the session, the biggest move, and how many of those moves it also applied to live tracking. Those are the pops where everything jumps at once. Bases that keep moving mean one of them is loose, sits on something that flexes, or was re-aimed while SteamVR still had its old position saved. It isn't always the one in the table, so look for the line that names the base that turned.
 
 "Not tracking" adds up every outage plus every flap. It leaves out outages while the headset was in standby and moves of the whole playspace when the headset relocalizes. Neither is the device's fault. A flap is the tracking state dropping for under half a second while the pose is still valid. If one device flaps far more than your others, the bases can barely see it where it is.
 
