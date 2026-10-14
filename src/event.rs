@@ -107,6 +107,22 @@ pub enum Kind {
         ms: u64,
     },
     Parked(bool),
+    BaseReset {
+        base: String,
+    },
+    BoardUnreachable {
+        dongle: String,
+    },
+    DeviceConfigFail {
+        dongle: String,
+    },
+    ImuMissing,
+    SyncMismatch,
+    DbDisallowed,
+    ChannelConflict {
+        ch: u32,
+    },
+    RotorPhase,
 }
 
 impl std::fmt::Display for Kind {

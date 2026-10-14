@@ -422,13 +422,24 @@ fn live(f: &mut Frame, area: Rect, engine: &Engine, ui: &Ui) {
 
 fn summary_view(f: &mut Frame, area: Rect, ui: &Ui) {
     let s = &ui.summary;
-    let mut lines = vec![Line::styled(
+    let mut lines = Vec::new();
+    if !s.diagnosis.is_empty() {
+        lines.push(Line::styled("What went wrong", level_style(Level::Head)));
+        for (what, fix) in summary::diagnosis_lines(s) {
+            lines.push(Line::styled(format!("  {what}"), level_style(Level::Bad)));
+            if !fix.is_empty() {
+                lines.push(Line::raw(format!("    {fix}")));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(
         format!(
             "So far: {}. Worst first, ranked by time spent not tracking. Press q to stop and keep this summary.",
             fmt_dur(s.span_ms)
         ),
         Style::default().fg(Color::Cyan),
-    )];
+    ));
     let table = summary::table_lines(s);
     for (i, l) in table.into_iter().enumerate() {
         let style = match i {

@@ -28,6 +28,14 @@ struct Patterns {
     laser_fault: Regex,
     no_optical: Regex,
     radio_gap: Regex,
+    base_reset: Regex,
+    board_unreachable: Regex,
+    config_fail: Regex,
+    imu_missing: Regex,
+    sync_mismatch: Regex,
+    db_disallowed: Regex,
+    channel_conflict: Regex,
+    rotor_phase: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -67,6 +75,18 @@ fn patterns() -> &'static Patterns {
         no_optical: Regex::new(r"No optical frames in past").unwrap(),
         radio_gap: Regex::new(r"lighthouse: ([0-9A-Fa-f]{10}): Packet received after ([\d.]+)s")
             .unwrap(),
+        base_reset: Regex::new(r"Base (\S+) reset count changed").unwrap(),
+        board_unreachable: Regex::new(
+            r"([0-9A-Fa-f]{10}): Receiving wireless data, but unable to talk to controller main board",
+        )
+        .unwrap(),
+        config_fail: Regex::new(r"Unable to read device config for dongle ([0-9A-Fa-f]{10})")
+            .unwrap(),
+        imu_missing: Regex::new(r"No IMU data in past|no IMU data was available").unwrap(),
+        sync_mismatch: Regex::new(r"Explicit right sync does not match pending frame").unwrap(),
+        db_disallowed: Regex::new(r"disallowed by LighthouseDB").unwrap(),
+        channel_conflict: Regex::new(r"sync on beam channel conflict on ch (\d+)").unwrap(),
+        rotor_phase: Regex::new(r"Rotors on basestation out of 180-degree phase lock").unwrap(),
     })
 }
 
@@ -180,6 +200,30 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
         Kind::OvrRecenter
     } else if p.no_optical.is_match(msg) {
         Kind::NoOpticalFrames
+    } else if let Some(c) = p.base_reset.captures(msg) {
+        Kind::BaseReset {
+            base: c[1].to_string(),
+        }
+    } else if let Some(c) = p.board_unreachable.captures(msg) {
+        Kind::BoardUnreachable {
+            dongle: c[1].to_string(),
+        }
+    } else if let Some(c) = p.config_fail.captures(msg) {
+        Kind::DeviceConfigFail {
+            dongle: c[1].to_string(),
+        }
+    } else if p.imu_missing.is_match(msg) {
+        Kind::ImuMissing
+    } else if p.sync_mismatch.is_match(msg) {
+        Kind::SyncMismatch
+    } else if p.db_disallowed.is_match(msg) {
+        Kind::DbDisallowed
+    } else if let Some(c) = p.channel_conflict.captures(msg) {
+        Kind::ChannelConflict {
+            ch: c[1].parse().unwrap_or(0),
+        }
+    } else if p.rotor_phase.is_match(msg) {
+        Kind::RotorPhase
     } else {
         let c = p.radio_gap.captures(msg)?;
         Kind::RadioGap {
@@ -517,6 +561,79 @@ mod tests {
                 0
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn steamvr_2_16_fault_lines() {
+        assert_eq!(
+            kind(
+                "Tue Oct 13 2026 23:48:25.120 [Info] - lighthouse: Base 9417E0B3 reset count changed.  Base may have been bumped or power cycled."
+            ),
+            Kind::BaseReset {
+                base: "9417E0B3".into()
+            }
+        );
+        let board = parse(
+            "Wed Oct 14 2026 00:45:33.010 [Info] - lighthouse: 0C58EE58E6: Receiving wireless data, but unable to talk to controller main board.",
+        );
+        assert_eq!(board.device, None);
+        assert_eq!(
+            board.kind,
+            Kind::BoardUnreachable {
+                dongle: "0C58EE58E6".into()
+            }
+        );
+        let config = parse(
+            "Wed Oct 14 2026 00:45:27.402 [Info] - lighthouse: Unable to read device config for dongle 0C58EE58E6 device LHR-FD4FF7E2 (VRInitError_VendorSpecific_HmdFound_ConfigTooSmall). Ignoring it",
+        );
+        assert_eq!(config.device.as_deref(), Some("LHR-FD4FF7E2"));
+        assert_eq!(
+            config.kind,
+            Kind::DeviceConfigFail {
+                dongle: "0C58EE58E6".into()
+            }
+        );
+        assert_eq!(
+            kind(
+                "Wed Oct 14 2026 00:06:40.551 [Info] - lighthouse: LHR-FD4FF7E2 C: No IMU data in past 5 seconds"
+            ),
+            Kind::ImuMissing
+        );
+        assert_eq!(
+            kind(
+                "Wed Oct 14 2026 00:47:28.774 [Info] - lighthouse: LHR-A66FAA1B C: Trying to start tracking from base 9417E0B3: Bootstrap failed because no IMU data was available"
+            ),
+            Kind::ImuMissing
+        );
+        let sync = parse(
+            "Wed Oct 14 2026 00:42:11.300 [Info] - lighthouse: LHR-7E902102 C: Assertion failed:  Explicit right sync does not match pending frame",
+        );
+        assert_eq!(sync.device.as_deref(), Some("LHR-7E902102"));
+        assert_eq!(sync.kind, Kind::SyncMismatch);
+        assert_eq!(
+            kind(
+                "Wed Oct 14 2026 00:49:27.870 [Info] - lighthouse: LHR-FD4FF7E2 C: Trying to start tracking from base 9D8DEA7B: Could boot, but disallowed by LighthouseDB"
+            ),
+            Kind::DbDisallowed
+        );
+        assert_eq!(
+            parse_line(
+                "lighthouse: LHR-FD4FF7E2 C: Saw sync on beam channel conflict on ch 3",
+                0
+            )
+            .unwrap()
+            .kind,
+            Kind::ChannelConflict { ch: 3 }
+        );
+        assert_eq!(
+            parse_line(
+                "lighthouse: Rotors on basestation out of 180-degree phase lock",
+                0
+            )
+            .unwrap()
+            .kind,
+            Kind::RotorPhase
         );
     }
 

@@ -3,6 +3,7 @@ pub mod autostart;
 pub mod bases;
 pub mod correlate;
 pub mod detect;
+pub mod diagnose;
 pub mod engine;
 pub mod event;
 pub mod names;

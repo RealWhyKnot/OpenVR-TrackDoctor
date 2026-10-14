@@ -1,6 +1,7 @@
 use crate::bases::{self, BaseMoves, BaseRecord};
 use crate::correlate::{Correlator, Verdict};
 use crate::detect::{DevDetect, Frame, Thresholds, beyond_radius};
+use crate::diagnose::Diagnosis;
 use crate::event::{DeviceClass, Kind, SignalEvent, Source, TrackState};
 use crate::names::Names;
 use crate::report::SessionWriter;
@@ -46,6 +47,7 @@ pub struct Engine {
     pub notices: Vec<String>,
     pub base_moves: BaseMoves,
     pub base_db: Vec<BaseRecord>,
+    pub diagnosis: Diagnosis,
     incidents: HashMap<String, usize>,
     dirty: bool,
     last_snapshot: u64,
@@ -68,6 +70,7 @@ impl Engine {
             notices: Vec::new(),
             base_moves: BaseMoves::default(),
             base_db: Vec::new(),
+            diagnosis: Diagnosis::default(),
             incidents: HashMap::new(),
             dirty: false,
             last_snapshot: 0,
@@ -93,7 +96,7 @@ impl Engine {
             | Kind::UsbAttach {
                 dongle: Some(d), ..
             } => d.clone(),
-            Kind::RadioGap { dongle, .. } => dongle.clone(),
+            Kind::RadioGap { dongle, .. } | Kind::BoardUnreachable { dongle } => dongle.clone(),
             _ => return,
         };
         if let Some(serial) = self.device_for_dongle(&dongle) {
@@ -123,6 +126,17 @@ impl Engine {
             if let Some(m) = self.base_moves.ingest(ev.t_ms, &ev.kind) {
                 self.notices.push(bases::notice(&m));
             }
+            self.dirty = true;
+        }
+        let fired = self.diagnosis.ingest(&ev);
+        if !fired.is_empty() {
+            let tag = |s: &str| self.tag(s);
+            let lines: Vec<String> = fired
+                .into_iter()
+                .flat_map(|rule| self.diagnosis.explain(rule, &tag))
+                .map(|f| f.line())
+                .collect();
+            self.notices.extend(lines);
             self.dirty = true;
         }
         self.session.event(&ev);
@@ -280,6 +294,13 @@ impl Engine {
         summary::label(serial, &self.devices, &self.names)
     }
 
+    pub fn tag(&self, serial: &str) -> String {
+        match self.label(serial) {
+            l if l.is_empty() => serial.to_string(),
+            l => format!("{serial} ({l})"),
+        }
+    }
+
     pub fn summary(&self) -> Summary {
         let mut s = summary::build(
             self.session.verdicts(),
@@ -289,6 +310,7 @@ impl Engine {
             &self.names,
         );
         s.base_warnings = bases::warnings(&self.base_moves, &self.base_db);
+        s.diagnosis = self.diagnosis.findings(&|d| self.tag(d));
         s
     }
 

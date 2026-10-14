@@ -26,6 +26,16 @@ Session length 2h 13m. Worst first, ranked by time spent not tracking.
  3  LHR-A66FAA1B tracker            #####       1m 39s        20    247.5  dropout, cause unclear
 ```
 
+Above the table, "What went wrong" lists the problems TrackDoctor can pin down from SteamVR's log, each with what to do about it:
+
+- the base station map is out of date (SteamVR is still moving bases in it ten minutes in)
+- a tracker's dongle gets radio data but can't reach the tracker's main board
+- one device took over another one's dongle
+- a base station restarted
+- bursts of sync errors, where SteamVR couldn't match light from a base to the base it expected
+
+The live view also puts each one in its feed the moment it shows up.
+
 Under the table is a short list of things to try for each kind of problem, then the USB layout of your dongles.
 
 Near the end, the base stations section counts how often SteamVR moved each base in its map during the session, the biggest move, and how many of those moves it also applied to live tracking. Those are the pops where everything jumps at once. A base that never stops moving is usually loose, sits on something that flexes, or was re-aimed while SteamVR still had its old position saved.

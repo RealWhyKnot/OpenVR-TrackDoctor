@@ -50,6 +50,7 @@ pub struct Summary {
     pub shifts: usize,
     pub base_faults: Vec<String>,
     pub base_warnings: Vec<String>,
+    pub diagnosis: Vec<crate::diagnose::Finding>,
 }
 
 impl Summary {
@@ -375,11 +376,29 @@ pub fn tips(s: &Summary) -> Vec<String> {
         .collect()
 }
 
+pub fn diagnosis_lines(s: &Summary) -> Vec<(String, String)> {
+    s.diagnosis
+        .iter()
+        .map(|f| (f.what.clone(), f.fix.clone()))
+        .collect()
+}
+
 pub fn render(s: &Summary) -> String {
-    let mut out = format!(
+    let mut out = String::new();
+    if !s.diagnosis.is_empty() {
+        out.push_str("What went wrong:\n");
+        for (what, fix) in diagnosis_lines(s) {
+            out.push_str(&format!("  {what}\n"));
+            if !fix.is_empty() {
+                out.push_str(&format!("    {fix}\n"));
+            }
+        }
+        out.push('\n');
+    }
+    out.push_str(&format!(
         "Session length {}. Worst first, ranked by time spent not tracking.\n",
         fmt_dur(s.span_ms)
-    );
+    ));
     if s.rows.is_empty() {
         out.push_str("No trackers or controllers were seen.\n");
     }
