@@ -30,7 +30,7 @@ Above the table, "What went wrong" lists the problems TrackDoctor can pin down f
 
 - the base station map is out of date (SteamVR is still moving bases in it ten minutes in)
 - a base station turned or shifted while SteamVR was running
-- a tracker stops answering: its dongle gets radio data but can't reach the main board, SteamVR can't read its config, or its IMU data stops
+- a tracker stops answering: its dongle gets radio data but can't reach the main board, SteamVR can't read its config, or its IMU data stops. All three come from packets getting lost between the dongle and the tracker, so the first thing to fix is where the dongle sits
 - one device took over another one's dongle
 - a base station restarted
 - bursts of sync errors, where SteamVR couldn't match light from a base to the base it expected

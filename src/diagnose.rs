@@ -415,8 +415,12 @@ impl Diagnosis {
                     };
                     finding(
                         dev,
-                        format!("{} wasn't answering: {}{span}.", label(dev), join(&parts)),
-                        "Fix: turn it off and on again. If it keeps happening, pair it to another dongle. If the fault follows it to the new dongle, the device itself is failing.",
+                        format!(
+                            "{} wasn't answering: {}{span}. SteamVR logs these when packets between the dongle and the device get lost, so its radio link is weak.",
+                            label(dev),
+                            join(&parts)
+                        ),
+                        "Fix: plug its dongle straight into the PC rather than a hub, or put it on a USB extension cable out in the open where you play, then turn the device off and on. If it keeps happening on another dongle, the device itself is failing.",
                     )
                 })
                 .collect(),
