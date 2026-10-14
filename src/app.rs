@@ -1,3 +1,4 @@
+use crate::bases;
 use crate::engine::{Engine, Msg};
 use crate::event::now_ms;
 use crate::names::{Names, data_dir};
@@ -13,6 +14,24 @@ use std::time::Duration;
 pub fn spawn_collectors(tx: Sender<Msg>) {
     let vr_tx = tx.clone();
     std::thread::spawn(move || signals::openvr::run(vr_tx));
+
+    let db_tx = tx.clone();
+    std::thread::spawn(move || {
+        let Some(path) = signals::logtail::lighthouse_db_path() else {
+            return;
+        };
+        let mut last = None;
+        loop {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            if modified.is_some() && modified != last {
+                last = modified;
+                if db_tx.send(Msg::BaseDb(bases::read_db(&path))).is_err() {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    });
 
     let log_tx = tx.clone();
     std::thread::spawn(move || {
@@ -289,6 +308,16 @@ pub fn usb_layout() -> anyhow::Result<()> {
     if devices.is_empty() {
         println!("\nStart SteamVR to see which tracker uses each dongle.");
     }
+    win::pause_if_own_console();
+    Ok(())
+}
+
+pub fn bases() -> anyhow::Result<()> {
+    let history = bases::history(&report::sessions_dir(), 15);
+    print!(
+        "{}",
+        bases::render_history(&history, &bases::read_live_db())
+    );
     win::pause_if_own_console();
     Ok(())
 }

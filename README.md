@@ -28,6 +28,8 @@ Session length 2h 13m. Worst first, ranked by time spent not tracking.
 
 Under the table is a short list of things to try for each kind of problem, then the USB layout of your dongles.
 
+Near the end, the base stations section counts how often SteamVR moved each base in its map during the session, the biggest move, and how many of those moves it also applied to live tracking. Those are the pops where everything jumps at once. A base that never stops moving is usually loose, sits on something that flexes, or was re-aimed while SteamVR still had its old position saved.
+
 "Not tracking" adds up every outage plus every flap. It leaves out outages while the headset was in standby and moves of the whole playspace when the headset relocalizes. Neither is the device's fault. A flap is the tracking state dropping for under half a second while the pose is still valid. If one device flaps far more than your others, the bases can barely see it where it is.
 
 ## Live view
@@ -46,6 +48,7 @@ trackdoctor report [folder]     summary of the last recorded session, or of the 
 trackdoctor report --full       same, plus every incident with its evidence
 trackdoctor report --log FILE   re-read a saved vrserver.txt into an older session
 trackdoctor usb                 USB layout of your dongles
+trackdoctor bases               how much SteamVR moved each base station, session by session
 trackdoctor autostart on|off|status
 trackdoctor update              check for a newer release and install it
 trackdoctor dump                raw signal stream, for debugging
@@ -57,9 +60,9 @@ Add `--poses` to the live view or `dump` to also save `poses.csv` (about 10 rows
 
 ## What it saves
 
-Everything stays on your PC, in `%LOCALAPPDATA%\trackdoctor`. Each session gets a folder under `sessions\` with `events.jsonl` (every signal), `verdicts.jsonl`, `devices.json`, `usb.json` and `report.txt`. The report is rewritten every 30 seconds while recording. If TrackDoctor crashes or you close the window, the last copy is still there. Your device names are in `names.txt`.
+Everything stays on your PC, in `%LOCALAPPDATA%\trackdoctor`. Each session gets a folder under `sessions\` with `events.jsonl` (every signal), `verdicts.jsonl`, `devices.json`, `usb.json`, `bases.json` and `report.txt`. The report is rewritten every 30 seconds while recording. If TrackDoctor crashes or you close the window, the last copy is still there. Your device names are in `names.txt`.
 
-It reads SteamVR's `vrserver.txt` log and its per-device config files. It doesn't write to SteamVR's files, apart from registering itself as a startup app.
+It reads SteamVR's `vrserver.txt` log, its per-device config files and its saved base station map, `lighthousedb.json`. It doesn't write to SteamVR's files, apart from registering itself as a startup app.
 
 ## Reading verdicts
 

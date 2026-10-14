@@ -1,3 +1,4 @@
+use crate::bases::{self, BaseMoves, BaseRecord};
 use crate::correlate::{Correlator, Verdict};
 use crate::detect::{DevDetect, Frame, Thresholds, beyond_radius};
 use crate::event::{DeviceClass, Kind, SignalEvent, Source, TrackState};
@@ -15,6 +16,7 @@ pub enum Msg {
     Device(DeviceMeta),
     Battery { idx: usize, pct: f32 },
     Usb(Vec<UsbDongle>),
+    BaseDb(Vec<BaseRecord>),
     Status(String),
     SteamVrExited,
 }
@@ -42,6 +44,8 @@ pub struct Engine {
     pub radio: BTreeMap<String, RadioStats>,
     pub names: Names,
     pub notices: Vec<String>,
+    pub base_moves: BaseMoves,
+    pub base_db: Vec<BaseRecord>,
     incidents: HashMap<String, usize>,
     dirty: bool,
     last_snapshot: u64,
@@ -62,6 +66,8 @@ impl Engine {
             radio: BTreeMap::new(),
             names,
             notices: Vec::new(),
+            base_moves: BaseMoves::default(),
+            base_db: Vec::new(),
             incidents: HashMap::new(),
             dirty: false,
             last_snapshot: 0,
@@ -112,6 +118,12 @@ impl Engine {
                 r.count += 1;
                 r.max_ms = r.max_ms.max(*ms);
             }
+        }
+        if matches!(ev.kind, Kind::BaseMoved { .. } | Kind::BaseMovedForTracking) {
+            if let Some(m) = self.base_moves.ingest(ev.t_ms, &ev.kind) {
+                self.notices.push(bases::notice(&m));
+            }
+            self.dirty = true;
         }
         self.session.event(&ev);
         self.correlator.ingest(&ev);
@@ -238,6 +250,13 @@ impl Engine {
                     self.dirty = true;
                 }
             }
+            Msg::BaseDb(db) => {
+                if db != self.base_db {
+                    self.session.set_bases(&db);
+                    self.base_db = db;
+                    self.dirty = true;
+                }
+            }
             Msg::Status(_) | Msg::SteamVrExited => {}
         }
         emitted
@@ -262,13 +281,15 @@ impl Engine {
     }
 
     pub fn summary(&self) -> Summary {
-        summary::build(
+        let mut s = summary::build(
             self.session.verdicts(),
             &self.correlator.flap_summary(),
             &self.devices,
             self.correlator.parked(),
             &self.names,
-        )
+        );
+        s.base_warnings = bases::warnings(&self.base_moves, &self.base_db);
+        s
     }
 
     pub fn report_text(&self) -> String {

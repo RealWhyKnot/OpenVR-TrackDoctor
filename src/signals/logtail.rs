@@ -215,6 +215,14 @@ pub fn vrserver_log_path() -> PathBuf {
         .join("vrserver.txt")
 }
 
+pub fn lighthouse_db_path() -> Option<PathBuf> {
+    Some(
+        vrpath_dir("config")?
+            .join("lighthouse")
+            .join("lighthousedb.json"),
+    )
+}
+
 pub fn lighthouse_model(serial: &str) -> Option<(String, String)> {
     let path = vrpath_dir("config")?
         .join("lighthouse")

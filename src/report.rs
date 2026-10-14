@@ -1,3 +1,4 @@
+use crate::bases::{self, BaseRecord};
 use crate::correlate::{FlapSummary, Verdict};
 use crate::engine::{Engine, Msg};
 use crate::event::{DeviceClass, SignalEvent, Source};
@@ -179,6 +180,10 @@ impl SessionWriter {
         self.write_json("usb.json", &dongles);
     }
 
+    pub fn set_bases(&self, bases: &[BaseRecord]) {
+        self.write_json("bases.json", &bases);
+    }
+
     pub fn write_report(&self, text: &str, flaps: &FlapSummary) -> anyhow::Result<PathBuf> {
         let path = self.dir.join("report.txt");
         if self.files.is_some() {
@@ -203,12 +208,13 @@ impl SessionWriter {
     }
 }
 
-const SESSION_FILES: [&str; 7] = [
+const SESSION_FILES: [&str; 8] = [
     "events.jsonl",
     "verdicts.jsonl",
     "poses.csv",
     "devices.json",
     "usb.json",
+    "bases.json",
     "report.txt",
     "flaps.json",
 ];
@@ -322,6 +328,15 @@ pub fn compose(engine: &Engine, s: &Summary) -> String {
             out.push_str(&format!("{w}\n"));
         }
     }
+
+    out.push_str("\n== Base stations ==\n");
+    let seen: Vec<String> = engine
+        .devices
+        .iter()
+        .filter(|d| d.class == DeviceClass::TrackingReference)
+        .map(|d| d.serial.clone())
+        .collect();
+    out.push_str(&bases::section(&engine.base_moves, &engine.base_db, &seen));
 
     out.push_str("\n== Devices seen ==\n");
     if engine.devices.is_empty() {
@@ -515,6 +530,9 @@ fn replay_with(
     engine.set_devices(devices);
     if let Some(usb) = read_json::<Vec<UsbDongle>>(&dir.join("usb.json")) {
         engine.usb = usb;
+    }
+    if let Some(db) = read_json::<Vec<BaseRecord>>(&dir.join("bases.json")) {
+        engine.base_db = db;
     }
     const STEP_MS: u64 = 250;
     let mut now = events.first().map_or(0, |e| e.t_ms);

@@ -49,6 +49,7 @@ pub struct Summary {
     pub standby: usize,
     pub shifts: usize,
     pub base_faults: Vec<String>,
+    pub base_warnings: Vec<String>,
 }
 
 impl Summary {
@@ -355,6 +356,7 @@ pub fn notes(s: &Summary) -> Vec<String> {
             s.base_faults.join(", ")
         ));
     }
+    out.extend(s.base_warnings.iter().cloned());
     out
 }
 
