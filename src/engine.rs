@@ -122,21 +122,17 @@ impl Engine {
                 r.max_ms = r.max_ms.max(*ms);
             }
         }
+        if let Some(m) = self.base_moves.ingest(&ev) {
+            self.notices.push(bases::notice(&m));
+        }
         if matches!(ev.kind, Kind::BaseMoved { .. } | Kind::BaseMovedForTracking) {
-            if let Some(m) = self.base_moves.ingest(ev.t_ms, &ev.kind) {
-                self.notices.push(bases::notice(&m));
-            }
             self.dirty = true;
         }
-        let fired = self.diagnosis.ingest(&ev);
-        if !fired.is_empty() {
+        if self.diagnosis.ingest(&ev) {
             let tag = |s: &str| self.tag(s);
-            let lines: Vec<String> = fired
-                .into_iter()
-                .flat_map(|rule| self.diagnosis.explain(rule, &tag))
-                .map(|f| f.line())
-                .collect();
-            self.notices.extend(lines);
+            let found = self.diagnosis.findings(&tag);
+            let fresh = self.diagnosis.fresh(found);
+            self.notices.extend(fresh.iter().map(|f| f.line()));
             self.dirty = true;
         }
         self.session.event(&ev);

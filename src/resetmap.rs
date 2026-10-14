@@ -33,8 +33,8 @@ pub fn steamvr_running() -> bool {
         "CSV",
     ]))
     .output()
-    .map(|o| listed(&String::from_utf8_lossy(&o.stdout), "vrserver.exe"))
-    .unwrap_or(false)
+    .map(|o| !o.status.success() || listed(&String::from_utf8_lossy(&o.stdout), "vrserver.exe"))
+    .unwrap_or(true)
 }
 
 fn close_steamvr() -> anyhow::Result<()> {
@@ -102,7 +102,7 @@ pub fn explain(running: bool) -> String {
         "This renames SteamVR's saved base station map so a backup is kept. SteamVR builds a new one the next time it starts."
     };
     format!(
-        "{steps} SteamVR then works out where the bases are from scratch, which takes a minute or two with your trackers in view of the bases. Do this after every base is in its final place."
+        "{steps} SteamVR then works out where the bases are from scratch, which takes a minute or two with your trackers in view of the bases. Do this after every base is in its final place. If your headset tracks with base stations, SteamVR may ask you to run Room Setup again afterwards."
     )
 }
 
@@ -116,14 +116,14 @@ pub fn run(asked: bool) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let running = steamvr_running();
     if !asked {
-        println!("{}", explain(running));
+        println!("{}", explain(steamvr_running()));
         if !confirm("Reset the base station map now?") {
             println!("Left the map as it is.");
             return Ok(());
         }
     }
+    let running = steamvr_running();
     if running {
         println!("Closing SteamVR...");
         close_steamvr()?;

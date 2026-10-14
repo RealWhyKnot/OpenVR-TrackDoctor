@@ -7,12 +7,14 @@ pub const BIG_MOVE_MM: u32 = 50;
 pub const BIG_MOVE_DEG: f32 = 1.0;
 pub const STEADY_MM: u32 = 20;
 pub const LOOSE_TILT_DEG: f64 = 1.5;
+pub const SETTLE_MS: u64 = 10 * 60_000;
 const POP_WINDOW_MS: u64 = 100;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MoveStats {
     pub moves: usize,
     pub big: usize,
+    pub early: usize,
     pub max_mm: u32,
     pub max_deg: f32,
     pub pops: usize,
@@ -22,6 +24,7 @@ pub struct MoveStats {
 pub enum Steadiness {
     Steady,
     Small,
+    Settling,
     Shifting,
 }
 
@@ -29,6 +32,8 @@ impl MoveStats {
     pub fn steadiness(&self) -> Steadiness {
         if self.big > 0 {
             Steadiness::Shifting
+        } else if self.early > 0 {
+            Steadiness::Settling
         } else if self.max_mm >= STEADY_MM {
             Steadiness::Small
         } else {
@@ -52,6 +57,7 @@ pub fn short_serial(serial: &str) -> String {
 pub struct BaseMoves {
     pub bases: BTreeMap<String, MoveStats>,
     last_move: Option<(u64, String)>,
+    run_start: Option<u64>,
 }
 
 pub struct FirstBigMove {
@@ -61,8 +67,19 @@ pub struct FirstBigMove {
 }
 
 impl BaseMoves {
-    pub fn ingest(&mut self, t_ms: u64, kind: &Kind) -> Option<FirstBigMove> {
-        match kind {
+    pub fn ingest(&mut self, ev: &SignalEvent) -> Option<FirstBigMove> {
+        if ev.source == Source::Log {
+            if ev.kind == Kind::LogRotated {
+                self.run_start = None;
+                return None;
+            }
+            self.run_start.get_or_insert(ev.t_ms);
+        }
+        let t_ms = ev.t_ms;
+        let settled = self
+            .run_start
+            .is_some_and(|s| t_ms.saturating_sub(s) >= SETTLE_MS);
+        match &ev.kind {
             Kind::BaseMoved { base, mm, deg } => {
                 let base = short_serial(base);
                 let s = self.bases.entry(base.clone()).or_default();
@@ -71,6 +88,10 @@ impl BaseMoves {
                 s.max_deg = s.max_deg.max(*deg);
                 self.last_move = Some((t_ms, base.clone()));
                 if !is_big(*mm, *deg) {
+                    return None;
+                }
+                if !settled {
+                    s.early += 1;
                     return None;
                 }
                 s.big += 1;
@@ -314,6 +335,7 @@ fn verdict(s: &MoveStats, origin: bool) -> &'static str {
     match (s.steadiness(), origin) {
         (Steadiness::Shifting, _) if s.big > 1 => "kept moving: check its mount and power plug",
         (Steadiness::Shifting, _) => "one big move: check its mount if it happens again",
+        (Steadiness::Settling, _) => "moved while SteamVR was starting, then held",
         (Steadiness::Small, _) => "small corrections",
         (Steadiness::Steady, true) => "steady (SteamVR's origin, never moved)",
         (Steadiness::Steady, false) => "steady",
@@ -423,7 +445,7 @@ pub fn scan_session(dir: &Path) -> Option<SessionMoves> {
     let mut moves = BaseMoves::default();
     let mut offset_ms = None;
     for line in text.lines() {
-        let wanted = line.contains("BaseMoved");
+        let wanted = line.contains("BaseMoved") || line.contains("LogRotated");
         if !wanted && offset_ms.is_some() {
             continue;
         }
@@ -439,7 +461,7 @@ pub fn scan_session(dir: &Path) -> Option<SessionMoves> {
         {
             offset_ms = Some(-crate::signals::logtail::utc_offset(ev.t_ms, naive));
         }
-        moves.ingest(ev.t_ms, &ev.kind);
+        moves.ingest(&ev);
     }
     Some(SessionMoves {
         dir: dir.to_path_buf(),
@@ -511,7 +533,7 @@ pub fn render_history(history: &[SessionMoves], db: &[BaseRecord]) -> String {
         out.push_str("No recorded sessions with base station data yet.\n");
     } else {
         out.push_str(&format!(
-            "SteamVR base moves per session, oldest first (moves / largest; * means at least one move of {BIG_MOVE_MM} mm or {BIG_MOVE_DEG:.0} deg):\n"
+            "SteamVR base moves per session, oldest first (moves / largest; * means at least one move of {BIG_MOVE_MM} mm or {BIG_MOVE_DEG:.0} deg after SteamVR's first {} minutes):\n", SETTLE_MS / 60_000
         ));
         out.push_str(&format!(" {:<13}", "session"));
         for s in &serials {
@@ -594,24 +616,58 @@ mod tests {
         }
     }
 
+    fn log(m: &mut BaseMoves, t: u64, kind: Kind) -> Option<FirstBigMove> {
+        m.ingest(&SignalEvent::at(t, Source::Log, None, kind, ""))
+    }
+
+    fn settled() -> BaseMoves {
+        let mut m = BaseMoves::default();
+        log(&mut m, 0, Kind::BaseMovedForTracking);
+        m
+    }
+
+    const S: u64 = SETTLE_MS;
+
     #[test]
     fn moves_are_counted_per_base_and_pops_attach_to_the_last_move() {
-        let mut m = BaseMoves::default();
-        assert!(m.ingest(1000, &moved("9417e0b3", 30, 0.4)).is_none());
-        let first = m
-            .ingest(2000, &moved("9417E0B3", 138, 2.2))
-            .expect("first big move");
+        let mut m = settled();
+        assert!(log(&mut m, S + 1000, moved("9417e0b3", 30, 0.4)).is_none());
+        let first = log(&mut m, S + 2000, moved("9417E0B3", 138, 2.2)).expect("first big move");
         assert_eq!((first.base.as_str(), first.mm), ("9417E0B3", 138));
-        m.ingest(2000, &Kind::BaseMovedForTracking);
-        assert!(m.ingest(3000, &moved("9417E0B3", 60, 0.8)).is_none());
-        m.ingest(9000, &Kind::BaseMovedForTracking);
-        m.ingest(9500, &moved("B394A63C", 7, 0.1));
+        log(&mut m, S + 2000, Kind::BaseMovedForTracking);
+        assert!(log(&mut m, S + 3000, moved("9417E0B3", 60, 0.8)).is_none());
+        log(&mut m, S + 9000, Kind::BaseMovedForTracking);
+        log(&mut m, S + 9500, moved("B394A63C", 7, 0.1));
 
         let s = &m.bases["9417E0B3"];
         assert_eq!((s.moves, s.big, s.max_mm, s.pops), (3, 2, 138, 1));
         assert_eq!(s.steadiness(), Steadiness::Shifting);
         assert_eq!(m.bases["B394A63C"].steadiness(), Steadiness::Steady);
         assert_eq!(m.total(), 4);
+    }
+
+    #[test]
+    fn big_moves_while_steamvr_settles_give_no_notice() {
+        let mut m = BaseMoves::default();
+        assert!(log(&mut m, 5_000, moved("9417E0B3", 138, 2.2)).is_none());
+        assert!(log(&mut m, S - 1, moved("9417E0B3", 90, 1.0)).is_none());
+        let s = &m.bases["9417E0B3"];
+        assert_eq!((s.moves, s.early, s.big), (2, 2, 0));
+        assert_eq!(s.steadiness(), Steadiness::Settling);
+        assert!(warnings(&m, &[]).is_empty());
+        assert!(log(&mut m, S + 5_000, moved("9417E0B3", 60, 0.8)).is_some());
+        assert_eq!(m.bases["9417E0B3"].steadiness(), Steadiness::Shifting);
+    }
+
+    #[test]
+    fn a_new_log_starts_the_settle_window_again() {
+        let mut m = settled();
+        log(&mut m, S + 1, Kind::LogRotated);
+        assert!(log(&mut m, S + 2, moved("9417E0B3", 138, 2.2)).is_none());
+        assert_eq!(m.bases["9417E0B3"].early, 1);
+        let api = SignalEvent::at(3 * S, Source::Api, None, Kind::DeviceActivated, "");
+        m.ingest(&api);
+        assert!(log(&mut m, 2 * S + 3, moved("9417E0B3", 138, 2.2)).is_some());
     }
 
     #[test]
@@ -677,11 +733,11 @@ mod tests {
 
     #[test]
     fn section_ranks_shifting_bases_first_and_points_at_the_origin() {
-        let mut m = BaseMoves::default();
-        m.ingest(0, &moved("9D8DEA7B", 92, 1.2));
-        m.ingest(10, &moved("9417E0B3", 138, 2.2));
-        m.ingest(10, &Kind::BaseMovedForTracking);
-        m.ingest(20, &moved("B394A63C", 40, 0.5));
+        let mut m = settled();
+        log(&mut m, S, moved("9D8DEA7B", 92, 1.2));
+        log(&mut m, S + 10, moved("9417E0B3", 138, 2.2));
+        log(&mut m, S + 10, Kind::BaseMovedForTracking);
+        log(&mut m, S + 20, moved("B394A63C", 40, 0.5));
         let db = parse_db(DB);
         let seen = vec!["LHB-C538EFC9".to_string(), "LHB-B394A63C".to_string()];
         let text = section(&m, &db, &seen);
@@ -744,6 +800,13 @@ mod tests {
                 moved("9417E0B3", 94, 1.2),
                 "Mon Oct 12 2026 23:37:25.419 [Info] - lighthouse: Moving base 9417E0B3 94mm and 1.2 deg",
             ),
+            SignalEvent::at(
+                1_791_866_245_419 + SETTLE_MS + 60_000,
+                Source::Log,
+                None,
+                moved("9417E0B3", 60, 0.8),
+                "Mon Oct 12 2026 23:48:25.419 [Info] - lighthouse: Moving base 9417E0B3 60mm and 0.8 deg",
+            ),
         ];
         let text: Vec<String> = evs
             .iter()
@@ -753,9 +816,10 @@ mod tests {
         let s = scan_session(&dir).unwrap();
         assert_eq!(s.start_ms, 1_791_866_242_776);
         assert_eq!(s.offset_ms, Some(-5 * 3_600_000));
-        assert_eq!(s.moves.bases["9417E0B3"].big, 1);
+        let b = &s.moves.bases["9417E0B3"];
+        assert_eq!((b.moves, b.early, b.big), (2, 1, 1));
         let h = render_history(&[s], &[]);
-        assert!(h.contains("Oct 12 23:37") && h.contains("1 / 94mm*"), "{h}");
+        assert!(h.contains("Oct 12 23:37") && h.contains("2 / 94mm*"), "{h}");
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 }

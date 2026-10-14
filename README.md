@@ -29,14 +29,18 @@ Session length 2h 13m. Worst first, ranked by time spent not tracking.
 Above the table, "What went wrong" lists the problems TrackDoctor can pin down from SteamVR's log, each with what to do about it:
 
 - the base station map is out of date (SteamVR is still moving bases in it ten minutes in)
-- a tracker's dongle gets radio data but can't reach the tracker's main board
+- a tracker stops answering: its dongle gets radio data but can't reach the main board, SteamVR can't read its config, or its IMU data stops
 - one device took over another one's dongle
 - a base station restarted
 - bursts of sync errors, where SteamVR couldn't match light from a base to the base it expected
+- two base stations on the same channel
+- a 1.0 base station whose rotors fell out of phase lock
+
+The map check ignores SteamVR's first ten minutes, because it always nudges the bases a bit while it settles in.
 
 The live view also puts each one in its feed the moment it shows up.
 
-When the map is out of date, `trackdoctor resetmap` resets it. It asks first, because it closes SteamVR and whatever game is running. It then renames `lighthousedb.json` to a dated backup and starts SteamVR again, which works out where the bases are in a minute or two. Do it once every base is where it'll stay. If the live view flagged the map, pressing q offers the same reset. To undo it, close SteamVR and rename the backup back to `lighthousedb.json`.
+When the map is out of date, `trackdoctor resetmap` resets it. It asks first, because it closes SteamVR and whatever game is running. It then renames `lighthousedb.json` to a dated backup and starts SteamVR again, which works out where the bases are in a minute or two. Do it once every base is where it'll stay. SteamVR treats the new map as a new room, so if your headset tracks with base stations you may have to run Room Setup again. If the live view flagged the map, pressing q offers the same reset. To undo it, close SteamVR and rename the backup back to `lighthousedb.json`.
 
 Under the table is a short list of things to try for each kind of problem, then the USB layout of your dongles.
 
