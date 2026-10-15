@@ -1,0 +1,166 @@
+import { Theme } from "../theme.slint";
+import { ResetMap, Updates, Sessions } from "../state.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+
+component BarButton inherits VerticalLayout {
+    in property <string> text;
+    in property <length> button-width;
+    callback clicked();
+    alignment: center;
+    SmallButton {
+        width: root.button-width;
+        text: root.text;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component UpdateBanner inherits Rectangle {
+    height: 40px;
+    border-radius: 6px;
+    background: Theme.accept;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 8px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            font-size: 13px;
+            color: Theme.gray-200;
+            overflow: elide;
+            text: Updates.state != "" ? Updates.state : "TrackDoctor " + Updates.version + " is available.";
+        }
+        if Updates.ready: BarButton {
+            button-width: 150px;
+            text: "Close and update";
+            clicked => {
+                Updates.finish-update();
+            }
+        }
+        if !Updates.ready && !Updates.busy: BarButton {
+            button-width: 80px;
+            text: "Update";
+            clicked => {
+                Updates.update-now();
+            }
+        }
+        if !Updates.ready && !Updates.busy: BarButton {
+            button-width: 130px;
+            text: "Skip this version";
+            clicked => {
+                Updates.update-skip();
+            }
+        }
+        if !Updates.busy: BarButton {
+            button-width: 64px;
+            text: "Later";
+            clicked => {
+                Updates.update-later();
+            }
+        }
+    }
+}
+
+export component ResetDialog inherits Rectangle {
+    background: #000000a0;
+    TouchArea { }
+    Rectangle {
+        width: min(520px, root.width - 40px);
+        height: box.preferred-height;
+        background: Theme.gray-800;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.gray-700;
+        box := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.gray-200;
+                text: "Reset the base station map";
+            }
+            Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.gray-200;
+                text: ResetMap.explain;
+            }
+            if ResetMap.progress != "": Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.cyan-400;
+                text: ResetMap.progress;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                if !ResetMap.done: SmallButton {
+                    width: 120px;
+                    enabled: !ResetMap.busy;
+                    text: "Reset the map";
+                    clicked => {
+                        ResetMap.confirm();
+                    }
+                }
+                SmallButton {
+                    width: 90px;
+                    enabled: !ResetMap.busy;
+                    text: ResetMap.done ? "Close" : "Cancel";
+                    clicked => {
+                        ResetMap.cancel();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component DeleteDialog inherits Rectangle {
+    background: #000000a0;
+    TouchArea { }
+    Rectangle {
+        width: min(460px, root.width - 40px);
+        height: box.preferred-height;
+        background: Theme.gray-800;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.gray-700;
+        box := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.gray-200;
+                text: Sessions.asking-title;
+            }
+            Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.gray-200;
+                text: Sessions.asking-what;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                SmallButton {
+                    width: 90px;
+                    text: Sessions.asking-button;
+                    clicked => {
+                        Sessions.confirm-delete();
+                    }
+                }
+                SmallButton {
+                    width: 90px;
+                    text: "Cancel";
+                    clicked => {
+                        Sessions.cancel-delete();
+                    }
+                }
+            }
+        }
+    }
+}

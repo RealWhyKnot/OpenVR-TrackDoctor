@@ -565,16 +565,20 @@ pub fn section(moves: &BaseMoves, db: &[BaseRecord], seen: &[String]) -> String 
     });
     let origin = |s: &str| db.iter().any(|b| b.serial == s && b.origin);
 
-    let mut out = format!(
-        "SteamVR moved bases in its map {} this session. It does that when trackers disagree about where a base is; on a solid setup it's rare and small.\n",
-        crate::summary::plural(moves.total(), "time")
-    );
+    let mut out = if moves.total() == 0 {
+        "SteamVR didn't move any base in its map this session. It does that when trackers disagree about where a base is, and on a solid setup it's rare and small.\n".to_string()
+    } else {
+        format!(
+            "SteamVR moved bases in its map {} this session. It does that when trackers disagree about where a base is, and on a solid setup it's rare and small.\n",
+            crate::summary::plural(moves.total(), "time")
+        )
+    };
     if moves.bases.values().any(|s| s.pops > 0) {
-        out.push_str("Pops are moves SteamVR also applied to live tracking, which can make everything jump at once.\n");
+        out.push_str("The jumps column counts moves SteamVR also applied to live tracking. Those make everything in the room jump at once.\n");
     }
     out.push_str(&format!(
-        " {:<9} {:>5}  {:<15} {:>4}  {}\n",
-        "base", "moves", "largest", "pops", "verdict"
+        " {:<9} {:>5}  {:<15} {:>5}  {}\n",
+        "base", "moves", "largest", "jumps", "verdict"
     ));
     for s in &serials {
         let st = stats(s);
@@ -584,7 +588,7 @@ pub fn section(moves: &BaseMoves, db: &[BaseRecord], seen: &[String]) -> String 
             format!("{} mm, {:.1} deg", st.max_mm, st.max_deg)
         };
         out.push_str(&format!(
-            " {s:<9} {:>5}  {largest:<15} {:>4}  {}\n",
+            " {s:<9} {:>5}  {largest:<15} {:>5}  {}\n",
             st.moves,
             st.pops,
             verdict(st, origin(s))
@@ -638,7 +642,7 @@ pub fn scan_session(dir: &Path) -> Option<SessionMoves> {
         .strip_prefix("session-")?
         .parse()
         .ok()?;
-    let text = std::fs::read_to_string(dir.join("events.jsonl")).ok()?;
+    let text = crate::store::read_text(dir, "events.jsonl")?;
     let mut moves = BaseMoves::default();
     let mut offset_ms = None;
     for line in text.lines() {

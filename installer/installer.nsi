@@ -1,9 +1,12 @@
 Unicode true
 
 !define APPNAME "TrackDoctor"
+!define EXENAME "trackdoctor.exe"
+!define OLDEXE "trackdoctor-bg.exe"
+!define UNINSTALLER "Uninstall.exe"
 !define ARPKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TrackDoctor"
 !define DATADIR "$LOCALAPPDATA\trackdoctor"
-!define MENUDIR "$SMPROGRAMS\TrackDoctor"
+!define OLDMENUDIR "$SMPROGRAMS\TrackDoctor"
 
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
@@ -16,9 +19,11 @@ SetCompressor /SOLID lzma
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 
-!define MUI_FINISHPAGE_RUN "$INSTDIR\trackdoctor.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Open the TrackDoctor live view now"
-!define MUI_FINISHPAGE_TEXT "TrackDoctor now starts by itself whenever SteamVR runs and records tracking problems in the background.$\r$\n$\r$\nAfter a VR session, open $\"TrackDoctor last session report$\" from the Start menu to see which trackers did worst."
+!define MUI_ICON "..\assets\icon.ico"
+!define MUI_UNICON "..\assets\icon.ico"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${EXENAME}"
+!define MUI_FINISHPAGE_RUN_TEXT "Open TrackDoctor"
+!define MUI_FINISHPAGE_TEXT "TrackDoctor opens its window when SteamVR starts and records while that window is open. Close the window and it stops.$\r$\n$\r$\nYou can turn off opening with SteamVR in TrackDoctor's Settings page."
 
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -43,12 +48,12 @@ VIAddVersionKey "LegalCopyright" ""
 !macro GuardRunning
 	${Do}
 		StrCpy $1 ""
-		!insertmacro IsRunning "trackdoctor-bg.exe"
+		!insertmacro IsRunning "${OLDEXE}"
 		${If} $0 = 0
-			StrCpy $1 "TrackDoctor is recording because SteamVR is running. Close SteamVR, then try again."
+			StrCpy $1 "An older TrackDoctor is recording because SteamVR is running. Close SteamVR, then try again."
 			StrCpy $2 6
 		${Else}
-			!insertmacro IsRunning "trackdoctor.exe"
+			!insertmacro IsRunning "${EXENAME}"
 			${If} $0 = 0
 				StrCpy $1 "TrackDoctor is open. Close it, then try again."
 				StrCpy $2 5
@@ -75,68 +80,84 @@ Function un.onInit
 FunctionEnd
 
 Section "Install"
+	ReadRegStr $0 HKCU "${ARPKEY}" "InstallLocation"
+	${If} $0 != ""
+	${AndIf} $0 != $INSTDIR
+	${AndIf} ${FileExists} "$0\${UNINSTALLER}"
+		DetailPrint "Removing the previous version from $0"
+		ExecWait '"$0\${UNINSTALLER}" /S _?=$0' $1
+		${If} $1 != 0
+			DetailPrint "The previous uninstaller returned $1"
+		${EndIf}
+		Delete "$0\${UNINSTALLER}"
+		RMDir "$0"
+	${EndIf}
+
+	Delete "$INSTDIR\${OLDEXE}"
+	Delete "${OLDMENUDIR}\TrackDoctor.lnk"
+	Delete "${OLDMENUDIR}\TrackDoctor last session report.lnk"
+	Delete "${OLDMENUDIR}\TrackDoctor USB layout.lnk"
+	Delete "${OLDMENUDIR}\Recorded sessions.lnk"
+	Delete "${OLDMENUDIR}\Uninstall TrackDoctor.lnk"
+	RMDir "${OLDMENUDIR}"
+
 	SetOutPath "$INSTDIR"
-	File "${PAYLOAD}\trackdoctor.exe"
-	File "${PAYLOAD}\trackdoctor-bg.exe"
+	File "${PAYLOAD}\${EXENAME}"
 	File "${PAYLOAD}\README.md"
 	File "${PAYLOAD}\LICENSE"
-	WriteUninstaller "$INSTDIR\Uninstall.exe"
-
-	CreateDirectory "${DATADIR}\sessions"
-	CreateDirectory "${MENUDIR}"
-	CreateShortcut "${MENUDIR}\TrackDoctor.lnk" "$INSTDIR\trackdoctor.exe"
-	CreateShortcut "${MENUDIR}\TrackDoctor last session report.lnk" "$INSTDIR\trackdoctor.exe" "report"
-	CreateShortcut "${MENUDIR}\TrackDoctor USB layout.lnk" "$INSTDIR\trackdoctor.exe" "usb"
-	CreateShortcut "${MENUDIR}\Recorded sessions.lnk" "${DATADIR}\sessions"
-	CreateShortcut "${MENUDIR}\Uninstall TrackDoctor.lnk" "$INSTDIR\Uninstall.exe"
+	WriteUninstaller "$INSTDIR\${UNINSTALLER}"
+	CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
 
 	WriteRegStr HKCU "${ARPKEY}" "DisplayName" "${APPNAME}"
 	WriteRegStr HKCU "${ARPKEY}" "DisplayVersion" "${VERSION}"
-	WriteRegStr HKCU "${ARPKEY}" "DisplayIcon" "$INSTDIR\trackdoctor.exe"
+	WriteRegStr HKCU "${ARPKEY}" "DisplayIcon" "$INSTDIR\${EXENAME}"
 	WriteRegStr HKCU "${ARPKEY}" "Publisher" "RealWhyKnot"
 	WriteRegStr HKCU "${ARPKEY}" "InstallLocation" "$INSTDIR"
-	WriteRegStr HKCU "${ARPKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-	WriteRegStr HKCU "${ARPKEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+	WriteRegStr HKCU "${ARPKEY}" "UninstallString" '"$INSTDIR\${UNINSTALLER}"'
+	WriteRegStr HKCU "${ARPKEY}" "QuietUninstallString" '"$INSTDIR\${UNINSTALLER}" /S'
 	WriteRegStr HKCU "${ARPKEY}" "URLInfoAbout" "https://github.com/RealWhyKnot/OpenVR-TrackDoctor"
 	WriteRegDWORD HKCU "${ARPKEY}" "NoModify" 1
 	WriteRegDWORD HKCU "${ARPKEY}" "NoRepair" 1
 	${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
 	WriteRegDWORD HKCU "${ARPKEY}" "EstimatedSize" $0
 
-	DetailPrint "Registering with SteamVR so TrackDoctor starts with VR..."
-	nsExec::ExecToLog '"$INSTDIR\trackdoctor.exe" autostart on'
+	DetailPrint "Adding TrackDoctor to SteamVR's startup apps..."
+	nsExec::ExecToLog /TIMEOUT=60000 '"$INSTDIR\${EXENAME}" --register-steamvr'
 	Pop $0
-	${If} $0 <> 0
-		DetailPrint "SteamVR registration did not complete (code $0)."
-		${IfNot} ${Silent}
-			MessageBox MB_OK|MB_ICONINFORMATION "TrackDoctor is installed, but it could not register with SteamVR, so it will not start with VR yet. Install or update SteamVR, then run this installer again."
-		${EndIf}
+	${If} $0 != "0"
+	${AndIf} $0 != "3"
+		DetailPrint "Adding TrackDoctor to SteamVR didn't finish ($0). Turn on $\"Open TrackDoctor when SteamVR starts$\" in its Settings page to try again."
 	${EndIf}
 SectionEnd
 
 Section "Uninstall"
 	DetailPrint "Removing TrackDoctor from SteamVR's startup apps..."
-	nsExec::ExecToLog '"$INSTDIR\trackdoctor.exe" autostart off'
+	nsExec::ExecToLog /TIMEOUT=60000 '"$INSTDIR\${EXENAME}" --unregister-steamvr'
 	Pop $0
+	${If} $0 != "0"
+		DetailPrint "Removing TrackDoctor from SteamVR didn't finish ($0)."
+	${EndIf}
 
-	Delete "${MENUDIR}\TrackDoctor.lnk"
-	Delete "${MENUDIR}\TrackDoctor last session report.lnk"
-	Delete "${MENUDIR}\TrackDoctor USB layout.lnk"
-	Delete "${MENUDIR}\Recorded sessions.lnk"
-	Delete "${MENUDIR}\Uninstall TrackDoctor.lnk"
-	RMDir "${MENUDIR}"
+	Delete "$SMPROGRAMS\${APPNAME}.lnk"
+	Delete "${OLDMENUDIR}\TrackDoctor.lnk"
+	Delete "${OLDMENUDIR}\TrackDoctor last session report.lnk"
+	Delete "${OLDMENUDIR}\TrackDoctor USB layout.lnk"
+	Delete "${OLDMENUDIR}\Recorded sessions.lnk"
+	Delete "${OLDMENUDIR}\Uninstall TrackDoctor.lnk"
+	RMDir "${OLDMENUDIR}"
 	DeleteRegKey HKCU "${ARPKEY}"
 
-	Delete "$INSTDIR\trackdoctor.exe"
-	Delete "$INSTDIR\trackdoctor-bg.exe"
+	Delete "$INSTDIR\${EXENAME}"
+	Delete "$INSTDIR\${OLDEXE}"
 	Delete "$INSTDIR\manifest.vrmanifest"
 	Delete "$INSTDIR\README.md"
 	Delete "$INSTDIR\LICENSE"
-	Delete "$INSTDIR\Uninstall.exe"
+	Delete "$INSTDIR\${UNINSTALLER}"
 	RMDir "$INSTDIR"
+	RMDir /r "${DATADIR}\update"
 
 	${IfNot} ${Silent}
-		MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your recorded sessions and device names?$\r$\n$\r$\n${DATADIR}" IDNO keep_data
+		MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your recorded sessions, device names and settings?$\r$\n$\r$\n${DATADIR}" IDNO keep_data
 		RMDir /r "${DATADIR}"
 		keep_data:
 	${EndIf}

@@ -1,0 +1,465 @@
+import { Theme } from "../theme.slint";
+import { Room } from "../state.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+import { Check } from "../widgets/check.slint";
+import { Select } from "../widgets/select.slint";
+
+component Swatch inherits HorizontalLayout {
+    in property <color> fill;
+    in property <string> text;
+    spacing: 6px;
+    height: 18px;
+    Rectangle {
+        width: 14px;
+        height: 14px;
+        border-radius: 2px;
+        background: root.fill;
+    }
+    Text {
+        vertical-alignment: center;
+        font-size: 12px;
+        color: Theme.gray-400;
+        text: root.text;
+    }
+}
+
+component Symbol inherits HorizontalLayout {
+    in property <string> mark;
+    in property <color> mark-color: Theme.gray-200;
+    in property <string> text;
+    spacing: 6px;
+    Text {
+        width: 18px;
+        horizontal-alignment: center;
+        font-size: 13px;
+        font-weight: 700;
+        color: root.mark-color;
+        text: root.mark;
+    }
+    Text {
+        font-size: 12px;
+        wrap: word-wrap;
+        color: Theme.gray-400;
+        text: root.text;
+    }
+}
+
+component PlayButton inherits Rectangle {
+    in property <bool> playing;
+    callback clicked();
+    width: 36px;
+    height: 28px;
+    border-radius: 6px;
+    background: touch.has-hover ? Theme.gray-700 : Theme.gray-800;
+    if !root.playing: Path {
+        x: (parent.width - 12px) / 2;
+        y: (parent.height - 14px) / 2;
+        width: 12px;
+        height: 14px;
+        viewbox-width: 12;
+        viewbox-height: 14;
+        commands: "M1 1 L11 7 L1 13 Z";
+        fill: touch.has-hover ? Theme.cyan-400 : white;
+    }
+    if root.playing: Path {
+        x: (parent.width - 12px) / 2;
+        y: (parent.height - 14px) / 2;
+        width: 12px;
+        height: 14px;
+        viewbox-width: 12;
+        viewbox-height: 14;
+        commands: "M1 1 L4.5 1 L4.5 13 L1 13 Z M7.5 1 L11 1 L11 13 L7.5 13 Z";
+        fill: touch.has-hover ? Theme.cyan-400 : white;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Scrubber inherits Rectangle {
+    property <bool> held;
+    height: 28px;
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.gray-700;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        width: parent.width * Room.position;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.cyan-400;
+    }
+    for t in Room.ticks: Rectangle {
+        x: parent.width * t.at - 1px;
+        y: (parent.height - 14px) / 2;
+        width: 2px;
+        height: 14px;
+        background: Theme.tone(t.tone);
+    }
+    Rectangle {
+        x: parent.width * Room.position - 6px;
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: white;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.held = true;
+                Room.seek(self.mouse-x / max(1px, self.width), 6px / max(1px, self.width));
+            }
+            if e.kind == PointerEventKind.up {
+                root.held = false;
+            }
+        }
+        moved => {
+            if root.held {
+                Room.seek(self.mouse-x / max(1px, self.width), 0);
+            }
+        }
+    }
+}
+
+export component RoomPage inherits Rectangle {
+    property <length> last-x;
+    property <length> last-y;
+    property <bool> panning;
+    property <bool> dragging;
+    changed visible => {
+        Room.shown(self.visible);
+        if self.visible {
+            Room.resized(view.width, view.height);
+        }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 8px;
+            HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                for p[i] in ["Top", "Front", "Side", "3D"]: SmallButton {
+                    width: 58px;
+                    text: p;
+                    active: Room.preset == i;
+                    clicked => {
+                        Room.preset = i;
+                        Room.pick-preset(i);
+                    }
+                }
+                Rectangle {
+                    width: 12px;
+                }
+                Text {
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.gray-400;
+                    text: "Coverage at";
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Select {
+                        width: 130px;
+                        options: ["off", "the floor", "waist (1 m)", "head (1.6 m)"];
+                        current <=> Room.coverage;
+                        picked => {
+                            Room.options-changed();
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 8px;
+                }
+                Check {
+                    width: 130px;
+                    text: "Full base reach";
+                    checked <=> Room.cones;
+                    toggled => {
+                        Room.options-changed();
+                    }
+                }
+                Check {
+                    width: 120px;
+                    text: "Drop spots";
+                    checked <=> Room.drops;
+                    toggled => {
+                        Room.options-changed();
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+            view := Rectangle {
+                vertical-stretch: 1;
+                background: #111827;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.gray-700;
+                clip: true;
+                changed width => {
+                    Room.resized(self.width, self.height);
+                }
+                changed height => {
+                    Room.resized(self.width, self.height);
+                }
+                Image {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    source: Room.picture;
+                    image-fit: fill;
+                }
+                for l in Room.labels: Rectangle {
+                    x: l.kind == 1 ? l.x + 10px : l.kind == 0 ? l.x - tag.preferred-width / 2 : l.x + 4px;
+                    y: l.kind == 1 ? l.y - 22px : l.kind == 0 ? l.y - 34px : l.y - 16px;
+                    width: tag.preferred-width + (l.kind == 1 ? 10px : 0);
+                    height: l.kind == 1 ? 18px : 16px;
+                    border-radius: 4px;
+                    background: l.kind == 1 ? #111827d0 : transparent;
+                    border-width: l.kind == 1 ? 1px : 0;
+                    border-color: Theme.tone(l.tone);
+                    tag := Text {
+                        x: l.kind == 1 ? 5px : 0;
+                        vertical-alignment: center;
+                        font-size: l.kind == 2 ? 11px : 12px;
+                        font-weight: l.kind == 2 ? 400 : 700;
+                        color: l.kind == 2 ? Theme.gray-500 : Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: root.panning ? move : root.dragging ? grabbing : grab;
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down {
+                            root.last-x = self.mouse-x;
+                            root.last-y = self.mouse-y;
+                            root.dragging = true;
+                            root.panning = e.button == PointerEventButton.right || e.button == PointerEventButton.middle || e.modifiers.shift;
+                        }
+                        if e.kind == PointerEventKind.up {
+                            root.dragging = false;
+                            root.panning = false;
+                        }
+                    }
+                    moved => {
+                        if root.dragging {
+                            Room.drag(self.mouse-x - root.last-x, self.mouse-y - root.last-y, root.panning);
+                            root.last-x = self.mouse-x;
+                            root.last-y = self.mouse-y;
+                            if !root.panning {
+                                Room.preset = -1;
+                            }
+                        }
+                    }
+                    scroll-event(e) => {
+                        Room.zoom(e.delta-y / 120px);
+                        accept
+                    }
+                }
+                Text {
+                    x: 10px;
+                    y: parent.height - 22px;
+                    font-size: 12px;
+                    color: Theme.gray-500;
+                    text: "Drag to turn. Right-drag to slide. Scroll to zoom.";
+                }
+                if Room.caption != "": Text {
+                    x: 10px;
+                    y: 8px;
+                    width: parent.width - 20px;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    color: Theme.gray-400;
+                    text: Room.caption;
+                }
+            }
+            if Room.replay: HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                PlayButton {
+                    playing: Room.playing;
+                    clicked => {
+                        Room.play();
+                    }
+                }
+                for sp[i] in ["1×", "4×", "16×", "60×"]: SmallButton {
+                    width: 42px;
+                    text: sp;
+                    active: Room.speed == i;
+                    clicked => {
+                        Room.speed = i;
+                        Room.pick-speed(i);
+                    }
+                }
+                Rectangle {
+                    width: 4px;
+                }
+                Scrubber {
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    width: 130px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    font-family: Theme.mono;
+                    color: Theme.gray-200;
+                    text: Room.clock;
+                }
+            }
+        }
+        Rectangle {
+            width: 250px;
+            background: Theme.gray-800;
+            border-radius: 6px;
+            clip: true;
+            Flickable {
+                content-width: self.width;
+                content-height: side.preferred-height;
+                side := VerticalLayout {
+                    width: parent.width;
+                    padding: 10px;
+                    spacing: 6px;
+                    alignment: start;
+                    if Room.replay: Text {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.gray-200;
+                        text: "Around this moment";
+                    }
+                    if Room.replay && Room.near.length == 0: Text {
+                        font-size: 12px;
+                        color: Theme.gray-500;
+                        text: "Nothing logged yet.";
+                    }
+                    for l in Room.near: Text {
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        color: Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                    if Room.replay: Rectangle {
+                        height: 6px;
+                    }
+                    Text {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.gray-200;
+                        text: "Devices";
+                    }
+                    if Room.legend.length == 0: Text {
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        color: Theme.gray-500;
+                        text: "Positions show up once SteamVR is tracking.";
+                    }
+                    for k in Room.legend: HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            width: 26px;
+                            horizontal-alignment: right;
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.tone(k.tone);
+                            text: k.mark;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                font-size: 12px;
+                                color: Theme.gray-200;
+                                overflow: elide;
+                                text: k.name == "" ? k.serial : k.name + "  " + k.serial;
+                            }
+                            Text {
+                                font-size: 12px;
+                                wrap: word-wrap;
+                                color: Theme.tone(k.tone);
+                                text: k.detail;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 6px;
+                    }
+                    Text {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.gray-200;
+                        text: "How to read it";
+                    }
+                    Symbol {
+                        mark: "[]";
+                        mark-color: Theme.cyan-400;
+                        text: "Base station. The bright face and the short wedge point where it looks. The dot on the floor is the centre of its view.";
+                    }
+                    Symbol {
+                        mark: "o";
+                        mark-color: Theme.lime-500;
+                        text: "Tracker or controller. Its number is its trouble rank; ? means it isn't tracking right now.";
+                    }
+                    Symbol {
+                        mark: "x";
+                        mark-color: Theme.red-400;
+                        text: "Where a dropout started.";
+                    }
+                    Symbol {
+                        mark: "|";
+                        mark-color: Theme.gray-500;
+                        text: "Thin lines drop to the floor so you can read height and floor position.";
+                    }
+                    Text {
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        color: Theme.gray-400;
+                        text: "Colours: red worst, yellow some trouble, green clean.";
+                    }
+                    Rectangle {
+                        height: 6px;
+                    }
+                    Text {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.gray-200;
+                        text: "Coverage";
+                    }
+                    Text {
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        color: Theme.gray-400;
+                        text: Room.coverage-note;
+                    }
+                    Swatch {
+                        fill: #f8717138;
+                        text: "No base sees it";
+                    }
+                    Swatch {
+                        fill: #fbbf2440;
+                        text: "1 base";
+                    }
+                    Swatch {
+                        fill: #84cc1640;
+                        text: "2 bases";
+                    }
+                    Swatch {
+                        fill: #22c55e58;
+                        text: "3 or more";
+                    }
+                }
+            }
+        }
+    }
+}

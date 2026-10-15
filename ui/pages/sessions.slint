@@ -1,0 +1,151 @@
+import { Theme } from "../theme.slint";
+import { Sessions } from "../state.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+import { Select } from "../widgets/select.slint";
+
+component RowButton inherits VerticalLayout {
+    in property <string> text;
+    in property <length> button-width;
+    callback clicked();
+    alignment: center;
+    SmallButton {
+        width: root.button-width;
+        text: root.text;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SessionsPage inherits Rectangle {
+    VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.gray-500;
+                text: "Every SteamVR run TrackDoctor recorded. Click one to see it on the other pages, or replay it in the Room.";
+            }
+            SmallButton {
+                width: 90px;
+                text: "Refresh";
+                clicked => {
+                    Sessions.refresh();
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 28px;
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                font-size: 13px;
+                color: Theme.gray-400;
+                text: Sessions.totals;
+            }
+            Text {
+                vertical-alignment: center;
+                font-size: 13px;
+                color: Theme.gray-400;
+                text: "Keep sessions for";
+            }
+            VerticalLayout {
+                alignment: center;
+                Select {
+                    width: 120px;
+                    options: ["ever", "a year", "3 months", "a month"];
+                    current <=> Sessions.keep;
+                    picked(i) => {
+                        Sessions.keep-changed(i);
+                    }
+                }
+            }
+        }
+        if Sessions.note != "": Text {
+            font-size: 13px;
+            wrap: word-wrap;
+            color: Theme.amber-400;
+            text: Sessions.note;
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.gray-800;
+            border-radius: 6px;
+            clip: true;
+            Flickable {
+                content-width: self.width;
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    width: parent.width;
+                    padding: 6px;
+                    spacing: 2px;
+                    alignment: start;
+                    if Sessions.items.length == 0: Text {
+                        height: 28px;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        color: Theme.gray-500;
+                        text: "No sessions yet. One is saved every time SteamVR runs while TrackDoctor is open.";
+                    }
+                    for s[i] in Sessions.items: Rectangle {
+                        height: 44px;
+                        border-radius: 4px;
+                        background: i == Sessions.current ? Theme.gray-700 : touch.has-hover ? #37415180 : transparent;
+                        touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                Sessions.open(i);
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 6px;
+                            spacing: 6px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    font-size: 14px;
+                                    color: Theme.gray-200;
+                                    text: s.title;
+                                }
+                                Text {
+                                    font-size: 12px;
+                                    color: Theme.tone(s.tone);
+                                    text: s.detail;
+                                    overflow: elide;
+                                }
+                            }
+                            if s.replay: RowButton {
+                                button-width: 70px;
+                                text: "Replay";
+                                clicked => {
+                                    Sessions.replay(i);
+                                }
+                            }
+                            RowButton {
+                                button-width: 64px;
+                                text: "Folder";
+                                clicked => {
+                                    Sessions.open-folder(i);
+                                }
+                            }
+                            if !s.live: RowButton {
+                                button-width: 64px;
+                                text: "Delete";
+                                clicked => {
+                                    Sessions.delete(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

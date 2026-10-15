@@ -1,0 +1,203 @@
+export struct Device {
+    serial: string,
+    name: string,
+    state: string,
+    tone: int,
+    pose: string,
+    battery: string,
+    flaps: string,
+    incidents: string,
+    dongle: string,
+}
+
+export struct Line {
+    text: string,
+    tone: int,
+}
+
+export struct Finding {
+    title: string,
+    what: string,
+    steps: [string],
+    tone: int,
+    reset: bool,
+}
+
+export struct Rank {
+    rank: string,
+    serial: string,
+    name: string,
+    lost: string,
+    share: float,
+    incidents: string,
+    flaps: string,
+    main: string,
+    tone: int,
+}
+
+export struct RoomLabel {
+    x: length,
+    y: length,
+    text: string,
+    tone: int,
+    kind: int,
+}
+
+export struct RoomKey {
+    mark: string,
+    serial: string,
+    name: string,
+    detail: string,
+    tone: int,
+}
+
+export struct SessionItem {
+    title: string,
+    detail: string,
+    tone: int,
+    replay: bool,
+    live: bool,
+}
+
+export struct Tick {
+    at: float,
+    tone: int,
+}
+
+export struct NameRow {
+    serial: string,
+    kind: string,
+    name: string,
+}
+
+export global Navigation {
+    in-out property <int> page: 0;
+}
+
+export global Status {
+    in property <string> version;
+    in property <string> state: "Waiting for SteamVR";
+    in property <int> tone: 4;
+    in property <string> detail;
+    in property <string> viewing;
+    in property <string> notice;
+    callback back-to-live();
+    callback dismiss-notice();
+}
+
+export global Live {
+    in property <[Device]> devices;
+    in property <[Line]> feed;
+    in property <string> empty: "Start SteamVR. This fills in once it is running.";
+    in property <bool> past;
+    in-out property <int> mode;
+    in property <[Line]> log;
+    in property <string> log-where;
+    in property <bool> log-older;
+    in property <bool> log-newer;
+    callback log-page(int);
+}
+
+export global Report {
+    in property <[Finding]> findings;
+    in property <string> heading;
+    in property <[Rank]> ranks;
+    in property <[Line]> notes;
+    in property <[Line]> bases;
+    in property <string> empty;
+    callback reset-map();
+}
+
+export global Usb {
+    in property <[Line]> tree;
+    in property <[Line]> warnings;
+}
+
+export global Room {
+    in property <image> picture;
+    in property <[RoomLabel]> labels;
+    in property <[RoomKey]> legend;
+    in property <string> caption;
+    in property <string> coverage-note;
+    in-out property <int> preset: 3;
+    in-out property <int> coverage: 2;
+    in-out property <bool> cones;
+    in-out property <bool> drops: true;
+    callback resized(length, length);
+    callback shown(bool);
+    callback drag(length, length, bool);
+    callback zoom(float);
+    callback pick-preset(int);
+    callback options-changed();
+    in property <bool> replay;
+    in property <bool> playing;
+    in-out property <int> speed;
+    in property <float> position;
+    in property <string> clock;
+    in property <[Tick]> ticks;
+    in property <[Line]> near;
+    callback play();
+    callback seek(float, float);
+    callback pick-speed(int);
+}
+
+export global Bases {
+    in property <[Line]> lines;
+}
+
+export global Sessions {
+    in property <[SessionItem]> items;
+    in property <int> current: -1;
+    in property <string> note;
+    in property <string> totals;
+    in-out property <int> keep;
+    in property <int> asking: -1;
+    in property <string> asking-what;
+    in property <string> asking-title;
+    in property <string> asking-button;
+    callback open(int);
+    callback replay(int);
+    callback open-folder(int);
+    callback delete(int);
+    callback confirm-delete();
+    callback cancel-delete();
+    callback keep-changed(int);
+    callback refresh();
+}
+
+export global Settings {
+    in-out property <bool> open-with-steamvr: true;
+    in-out property <bool> save-poses;
+    in property <string> steamvr-note;
+    in property <bool> steamvr-busy;
+    in property <[NameRow]> names;
+    in property <string> data-dir;
+    callback steamvr-toggled(bool);
+    callback poses-toggled(bool);
+    callback rename(string, string);
+    callback open-data();
+    callback check-updates();
+    in property <string> update-note;
+}
+
+export global Updates {
+    in property <string> version;
+    in property <string> state;
+    in property <bool> busy;
+    in property <bool> ready;
+    in-out property <bool> shown;
+    callback update-now();
+    callback update-later();
+    callback update-skip();
+    callback finish-update();
+}
+
+export global ResetMap {
+    in-out property <bool> shown;
+    in property <string> explain;
+    in property <string> progress;
+    in property <bool> busy;
+    in property <bool> done;
+    callback confirm();
+    callback cancel();
+}

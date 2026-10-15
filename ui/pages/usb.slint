@@ -1,0 +1,51 @@
+import { Theme } from "../theme.slint";
+import { Usb } from "../state.slint";
+
+export component UsbPage inherits Rectangle {
+    clip: true;
+    Flickable {
+        content-width: self.width;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            width: root.width;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                font-size: 13px;
+                color: Theme.gray-500;
+                text: "Which USB controller and port each dongle uses, and which device talks through it.";
+            }
+            Rectangle {
+                background: Theme.gray-800;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 1px;
+                    if Usb.tree.length == 0: Text {
+                        font-size: 13px;
+                        color: Theme.gray-500;
+                        text: "No SteamVR dongles found on USB.";
+                    }
+                    for l in Usb.tree: Text {
+                        font-family: Theme.mono;
+                        font-size: 13px;
+                        color: Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                }
+            }
+            for w in Usb.warnings: Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.amber-400;
+                text: w.text;
+            }
+            Text {
+                font-size: 12px;
+                wrap: word-wrap;
+                color: Theme.gray-500;
+                text: "#N is the trouble rank from the Summary page. Radio gaps are stretches where SteamVR's log says no packets came from a device.";
+            }
+        }
+    }
+}

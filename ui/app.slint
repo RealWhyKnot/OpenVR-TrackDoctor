@@ -1,0 +1,155 @@
+import "./fonts/Nunito-Regular.ttf";
+import "./fonts/Nunito-Bold.ttf";
+import { Theme } from "theme.slint";
+import { Navigation, Status, Updates, ResetMap, Sessions } from "state.slint";
+import { NavBar } from "pages/nav-bar.slint";
+import { LivePage } from "pages/live.slint";
+import { SummaryPage } from "pages/summary.slint";
+import { UsbPage } from "pages/usb.slint";
+import { RoomPage } from "pages/room.slint";
+import { BasesPage } from "pages/bases.slint";
+import { SessionsPage } from "pages/sessions.slint";
+import { SettingsPage } from "pages/settings.slint";
+import { UpdateBanner, ResetDialog, DeleteDialog } from "pages/dialogs.slint";
+import { SmallButton } from "widgets/small-button.slint";
+
+export { Device, Line, Finding, Rank, RoomLabel, RoomKey, SessionItem, Tick, NameRow, Navigation, Status, Live, Report, Usb, Room, Bases, Sessions, Settings, Updates, ResetMap } from "state.slint";
+
+export component AppWindow inherits Window {
+    title: "TrackDoctor";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1040px;
+    preferred-height: 700px;
+    min-width: 860px;
+    min-height: 540px;
+    background: Theme.gray-900;
+    default-font-family: "Nunito";
+    default-font-size: 14px;
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.modifiers.control || e.modifiers.alt {
+                return reject;
+            }
+            if e.text >= "1" && e.text <= "7" && e.text.character-count == 1 {
+                Navigation.page = e.text.to-float() - 1;
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            HorizontalLayout {
+                height: 30px;
+                spacing: 10px;
+                Text {
+                    vertical-alignment: center;
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: Theme.gray-200;
+                    text: "TrackDoctor";
+                }
+                Rectangle {
+                    width: 10px;
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Theme.tone(Status.tone);
+                    }
+                }
+                Text {
+                    vertical-alignment: center;
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.tone(Status.tone);
+                    text: Status.state;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.gray-400;
+                    overflow: elide;
+                    text: Status.detail;
+                }
+                if Status.viewing != "": Text {
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.amber-400;
+                    text: "Showing " + Status.viewing;
+                }
+                if Status.viewing != "": VerticalLayout {
+                    alignment: center;
+                    SmallButton {
+                        width: 110px;
+                        text: "Back to live";
+                        clicked => {
+                            Status.back-to-live();
+                        }
+                    }
+                }
+            }
+            if Updates.shown: UpdateBanner { }
+            if Status.notice != "": Rectangle {
+                height: notice.preferred-height + 16px;
+                border-radius: 6px;
+                background: #fbbf2426;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 6px;
+                    spacing: 8px;
+                    notice := Text {
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        color: Theme.gray-200;
+                        text: Status.notice;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        SmallButton {
+                            width: 40px;
+                            text: "OK";
+                            clicked => {
+                                Status.dismiss-notice();
+                            }
+                        }
+                    }
+                }
+            }
+            NavBar { }
+            Rectangle {
+                vertical-stretch: 1;
+                if Navigation.page == 0: LivePage { }
+                if Navigation.page == 1: SummaryPage { }
+                if Navigation.page == 2: UsbPage { }
+                RoomPage {
+                    visible: Navigation.page == 3;
+                }
+                if Navigation.page == 4: BasesPage { }
+                if Navigation.page == 5: SessionsPage { }
+                if Navigation.page == 6: SettingsPage { }
+            }
+        }
+    }
+
+    if ResetMap.shown: ResetDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+
+    if Sessions.asking >= 0: DeleteDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+}

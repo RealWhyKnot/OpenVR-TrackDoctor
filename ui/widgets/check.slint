@@ -1,0 +1,47 @@
+import { Theme } from "../theme.slint";
+
+export component Check inherits Rectangle {
+    in property <string> text;
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    height: 20px;
+    box := Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        border-width: root.checked ? 0 : 1px;
+        border-color: Theme.gray-500;
+        background: root.checked ? Theme.cyan-400 : Theme.input;
+        if root.checked: Path {
+            width: 10px;
+            height: 10px;
+            x: 2px;
+            y: 2px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            commands: "M1.5 5.2 L4 7.6 L8.6 2.4";
+            stroke: Theme.gray-900;
+            stroke-width: 1.8px;
+        }
+    }
+    caption := Text {
+        x: 22px;
+        width: parent.width - 22px;
+        height: parent.height;
+        vertical-alignment: center;
+        font-size: 14px;
+        text: root.text;
+        color: root.enabled ? white : Theme.gray-500;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}

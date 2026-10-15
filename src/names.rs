@@ -71,6 +71,39 @@ impl Names {
         true
     }
 
+    pub fn set(&mut self, serial: &str, name: &str) -> std::io::Result<()> {
+        let name = name.trim();
+        let text = std::fs::read_to_string(&self.path).unwrap_or_default();
+        let entry = if name.is_empty() {
+            format!("{serial} =")
+        } else {
+            format!("{serial} = {name}")
+        };
+        let mut found = false;
+        let mut lines: Vec<String> = text
+            .lines()
+            .map(|l| {
+                let listed = !l.trim_start().starts_with('#')
+                    && l.split('=').next().map(str::trim) == Some(serial);
+                if listed && !found {
+                    found = true;
+                    entry.clone()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        if !found {
+            lines.push(entry);
+        }
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&self.path, lines.join("\n") + "\n")?;
+        self.reload();
+        Ok(())
+    }
+
     pub fn add_missing(&self, devices: &[(String, String)]) -> std::io::Result<()> {
         let mut text = std::fs::read_to_string(&self.path).unwrap_or_else(|_| {
             "# Give each device a name you will recognise, for example:\n\
@@ -128,6 +161,24 @@ mod tests {
         std::fs::write(&path, "LHR-1 = waist\nLHR-2 = right hand\n").unwrap();
         let _ = names.refresh();
         assert_eq!(names.get("LHR-2"), Some("right hand"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_replaces_one_entry_and_keeps_the_rest() {
+        let path =
+            std::env::temp_dir().join(format!("trackdoctor-names-set-{}.txt", std::process::id()));
+        std::fs::write(&path, "# LHR-1 = old comment\nLHR-1 = waist\nLHR-2 =\n").unwrap();
+        let mut names = Names::load(path.clone());
+        names.set("LHR-1", " left foot ").unwrap();
+        names.set("LHR-3", "chest").unwrap();
+        names.set("LHR-2", "").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# LHR-1 = old comment\nLHR-1 = left foot\nLHR-2 =\nLHR-3 = chest\n"
+        );
+        assert_eq!(names.get("LHR-1"), Some("left foot"));
+        assert_eq!(names.get("LHR-3"), Some("chest"));
         let _ = std::fs::remove_file(&path);
     }
 }

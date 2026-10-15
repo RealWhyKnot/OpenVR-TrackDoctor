@@ -1,0 +1,44 @@
+import { Theme } from "../theme.slint";
+
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> number;
+    callback edited(string);
+    callback accepted(string);
+    height: 24px;
+    border-radius: 2px;
+    background: Theme.input;
+    if root.text == "": placeholder-label := Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        vertical-alignment: center;
+        font-size: 14px;
+        color: Theme.gray-600;
+        text: root.placeholder;
+    }
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        vertical-alignment: center;
+        font-size: 14px;
+        color: Theme.gray-400;
+        single-line: true;
+        selection-background-color: Theme.selection;
+        input-type: root.number ? InputType.number : InputType.text;
+        text <=> root.text;
+        edited => {
+            root.edited(self.text);
+        }
+        accepted => {
+            root.accepted(self.text);
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.accepted(self.text);
+            }
+        }
+    }
+}

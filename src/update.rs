@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 
 const RELEASES_URL: &str =
     "https://api.github.com/repos/RealWhyKnot/OpenVR-TrackDoctor/releases?per_page=20";
@@ -143,6 +142,7 @@ pub fn setup_script(
     let args = ps_quote(&format!("/S /D={}", install_dir.display()));
     let staging = ps_quote(&staging.display().to_string());
     let log = ps_quote(&log.display().to_string());
+    let relaunch = ps_quote(&install_dir.join("trackdoctor.exe").display().to_string());
     [
         "$ErrorActionPreference = 'Stop'".to_string(),
         "try {".to_string(),
@@ -155,6 +155,7 @@ pub fn setup_script(
         "        if ($setup.ExitCode -ne 0) { throw \"setup exited with code $($setup.ExitCode)\" }".to_string(),
         "        break".to_string(),
         "    }".to_string(),
+        format!("    Start-Process -FilePath {relaunch}"),
         "} catch {".to_string(),
         format!("    \"$(Get-Date -Format s) update failed\" | Add-Content -LiteralPath {log}"),
         format!("    $_ | Out-String | Add-Content -LiteralPath {log}"),
@@ -164,8 +165,6 @@ pub fn setup_script(
     ]
     .join("\r\n")
 }
-
-static NOTICE: Mutex<Option<Release>> = Mutex::new(None);
 
 fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()
@@ -187,6 +186,9 @@ fn skip_file() -> PathBuf {
 }
 
 pub fn current() -> Option<Version> {
+    if crate::DEV {
+        return None;
+    }
     Version::parse(crate::VERSION)
 }
 
@@ -200,11 +202,15 @@ pub fn cleanup_old() {
 
 #[cfg(windows)]
 pub(crate) fn system_tool(exe: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let path = match std::env::var_os("SystemRoot") {
         Some(root) => PathBuf::from(root).join("System32").join(exe),
         None => PathBuf::from(exe),
     };
-    Command::new(path)
+    let mut cmd = Command::new(path);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 #[cfg(not(windows))]
@@ -255,21 +261,6 @@ pub fn find(respect_skip: bool) -> anyhow::Result<Option<Release>> {
     Ok(complete.then_some(release))
 }
 
-pub fn spawn_check() {
-    if current().is_none_or(|v| v.channel == Channel::Dev) {
-        return;
-    }
-    std::thread::spawn(|| {
-        if let Ok(Some(release)) = find(true) {
-            *NOTICE.lock().unwrap() = Some(release);
-        }
-    });
-}
-
-pub fn found() -> Option<Release> {
-    NOTICE.lock().unwrap().clone()
-}
-
 pub fn skip(release: &Release) -> anyhow::Result<()> {
     std::fs::create_dir_all(crate::names::data_dir())?;
     std::fs::write(skip_file(), &release.tag_name)?;
@@ -312,7 +303,7 @@ fn download(release: &Release) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&staging)?;
     let path = staging.join(&name);
     let status = system_tool("curl.exe")
-        .args(["-fL", "--progress-bar", "--max-time", "900", "-A"])
+        .args(["-fsSL", "--max-time", "900", "-A"])
         .arg(format!("TrackDoctor/{}", crate::VERSION))
         .arg("-o")
         .arg(&path)
@@ -334,11 +325,17 @@ fn swap_in(dir: &Path, fresh: &Path) -> anyhow::Result<()> {
             let target = dir.join(exe);
             let old = dir.join(format!("{exe}.old"));
             let _ = std::fs::remove_file(&old);
+            let required = exe == "trackdoctor.exe" || fresh.join(exe).exists();
+            if !required && !target.exists() {
+                continue;
+            }
             if target.exists() {
                 std::fs::rename(&target, &old)?;
                 moved.push((old, target.clone()));
             }
-            std::fs::copy(fresh.join(exe), &target)?;
+            if required {
+                std::fs::copy(fresh.join(exe), &target)?;
+            }
         }
         for doc in ["README.md", "LICENSE"] {
             if fresh.join(doc).exists() {
@@ -356,7 +353,7 @@ fn swap_in(dir: &Path, fresh: &Path) -> anyhow::Result<()> {
     result
 }
 
-pub fn install(release: &Release) -> anyhow::Result<String> {
+pub fn install(release: &Release) -> anyhow::Result<Installed> {
     let dir = exe_dir().ok_or_else(|| anyhow::anyhow!("cannot find the TrackDoctor folder"))?;
     let path = download(release)?;
     let staging = staging_dir();
@@ -380,20 +377,10 @@ pub fn install(release: &Release) -> anyhow::Result<String> {
             "-File",
         ])
         .arg(&script);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
         cmd.spawn()?;
-        return Ok(if crate::app::recorder_running() {
-            format!(
-                "TrackDoctor {version} installs once SteamVR closes, because the recorder is running."
-            )
-        } else {
-            format!("TrackDoctor {version} installs as soon as this window closes.")
-        });
+        return Ok(Installed::OnClose(format!(
+            "TrackDoctor {version} is ready. It installs when you close TrackDoctor, then opens again."
+        )));
     }
     let extracted = staging.join("extracted");
     std::fs::create_dir_all(&extracted)?;
@@ -411,77 +398,21 @@ pub fn install(release: &Release) -> anyhow::Result<String> {
     }
     swap_in(&dir, &extracted)?;
     let _ = std::fs::remove_dir_all(&staging);
-    Ok(if crate::app::recorder_running() {
-        format!(
-            "Updated to TrackDoctor {version}. The recorder switches over the next time SteamVR starts."
-        )
-    } else {
-        format!("Updated to TrackDoctor {version}.")
-    })
+    Ok(Installed::Restart(format!(
+        "Updated to TrackDoctor {version}. Close TrackDoctor to switch over; it opens again by itself."
+    )))
 }
 
-pub fn ask(release: &Release, offer_skip: bool) -> Answer {
-    let version = release
-        .version()
-        .map_or(release.tag_name.clone(), |v| v.to_string());
-    println!("\nTrackDoctor {version} is available: {}", release.html_url);
-    if offer_skip {
-        print!("Update now? [Y]es, [n]o, [s]kip this version: ");
-    } else {
-        print!("Update now? [Y]es, [n]o: ");
-    }
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return Answer::No;
-    }
-    match line.trim().to_ascii_lowercase().as_str() {
-        "" | "y" | "yes" => Answer::Yes,
-        "s" | "skip" if offer_skip => Answer::Skip,
-        _ => Answer::No,
-    }
+pub enum Installed {
+    OnClose(String),
+    Restart(String),
 }
 
-pub fn command() -> anyhow::Result<()> {
-    match current() {
-        Some(v) if v.channel != Channel::Dev => {
-            println!("TrackDoctor {v}. Checking for a newer release...");
-            match find(false)? {
-                Some(release) => offer(&release, false),
-                None => println!("You have the latest version."),
-            }
+impl Installed {
+    pub fn message(&self) -> &str {
+        match self {
+            Installed::OnClose(m) | Installed::Restart(m) => m,
         }
-        _ => println!(
-            "This is a development build ({}), so it doesn't update itself.",
-            crate::VERSION
-        ),
-    }
-    crate::win::pause_if_own_console();
-    Ok(())
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Answer {
-    Yes,
-    No,
-    Skip,
-}
-
-pub fn offer(release: &Release, offer_skip: bool) {
-    match ask(release, offer_skip) {
-        Answer::Yes => match install(release) {
-            Ok(msg) => println!("{msg}"),
-            Err(e) => println!(
-                "The update didn't finish: {e}. You're still on {}.",
-                crate::VERSION
-            ),
-        },
-        Answer::Skip => match skip(release) {
-            Ok(()) => println!("Skipped. `trackdoctor update` still offers it."),
-            Err(e) => println!("Could not save the skip: {e}"),
-        },
-        Answer::No => {}
     }
 }
 
@@ -518,6 +449,28 @@ mod tests {
             "2026.10.8.0.1",
         ] {
             assert!(Version::parse(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn dev_builds_are_exactly_the_versions_that_never_update() {
+        for s in [
+            "2026.10.15.0",
+            "v2026.10.15.0",
+            "2026.10.15.3-beta",
+            "2026.10.15.3-BETA",
+            "2026.10.15.0+abc",
+            "2026.10.15.0-9030",
+            "0.0.0.0-dev",
+            "2026.10.15",
+            "2026.10.15.0.1",
+            "4294967296.1.1.1",
+            "2026.10.15.4294967295",
+            "dev",
+            "",
+        ] {
+            let updates = Version::parse(s).is_some_and(|v| v.channel != Channel::Dev);
+            assert_eq!(crate::channel::is_release(s), updates, "{s}");
         }
     }
 
@@ -593,6 +546,7 @@ mod tests {
         assert!(script.contains("Get-Process -Name 'trackdoctor', 'trackdoctor-bg'"));
         assert!(script.contains(r"-ArgumentList '/S /D=C:\Users\O''Neil\AppData\Local\Programs\OpenVR-TrackDoctor' -Wait"));
         assert!(script.contains("ExitCode -eq 5 -or $setup.ExitCode -eq 6"));
+        assert!(script.contains(r"Start-Process -FilePath 'C:\Users\O''Neil\AppData\Local\Programs\OpenVR-TrackDoctor\trackdoctor.exe'"));
         assert!(!script.contains("O'N"));
     }
 }

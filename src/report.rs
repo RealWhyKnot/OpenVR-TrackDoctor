@@ -1,23 +1,30 @@
 use crate::bases::{self, BaseRecord};
-use crate::correlate::{FlapSummary, Verdict};
+use crate::correlate::{FlapSummary, Tag, Verdict};
 use crate::engine::{Engine, Msg};
 use crate::event::{DeviceClass, SignalEvent, Source};
 use crate::names::{Names, data_dir};
 use crate::signals::openvr::FrameSample;
 use crate::signals::usb::{UsbDongle, crowding};
 use crate::summary::{self, DeviceRecord, Summary, TreeCtx, fmt_dur};
+use crate::track::{Sample, TrackWriter};
 use anyhow::{Context, anyhow};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const POSE_INTERVAL_MS: u64 = 100;
+pub const PACKETS_FILE: &str = "packets.jsonl";
+pub const PACKETS_SUMMARY: &str = "packets.json";
+pub const RAW_LOG_FILE: &str = "vrserver.txt";
 const POSE_HEADER: &str = "t_ms,serial,x,y,z,qw,qx,qy,qz,state,valid";
 
 struct Files {
     events: std::fs::File,
     verdicts: std::fs::File,
     poses: Option<std::fs::File>,
+    track: Option<TrackWriter>,
+    packets: Option<std::fs::File>,
+    raw_log: Option<std::fs::File>,
 }
 
 pub struct SessionWriter {
@@ -82,6 +89,7 @@ impl SessionWriter {
     }
 
     pub fn in_dir(dir: PathBuf, poses: bool) -> anyhow::Result<Self> {
+        let t0 = crate::gui::sessions::start_ms(&dir).unwrap_or_else(crate::event::now_ms);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let mut bytes = 0;
         let poses = if poses {
@@ -96,6 +104,9 @@ impl SessionWriter {
                 events: std::fs::File::create(dir.join("events.jsonl"))?,
                 verdicts: std::fs::File::create(dir.join("verdicts.jsonl"))?,
                 poses,
+                track: TrackWriter::create(&dir.join(crate::track::RAW_FILE), t0).ok(),
+                packets: None,
+                raw_log: None,
             }),
             pose_last: HashMap::new(),
             bytes,
@@ -119,7 +130,22 @@ impl SessionWriter {
     }
 
     pub fn bytes_written(&self) -> u64 {
-        self.bytes
+        self.bytes + self.track_bytes()
+    }
+
+    fn track_bytes(&self) -> u64 {
+        self.files
+            .as_ref()
+            .and_then(|f| f.track.as_ref())
+            .map_or(0, |t| t.bytes().saturating_sub(TrackWriter::HEADER))
+    }
+
+    pub fn close(&mut self) {
+        if let Some(mut f) = self.files.take()
+            && let Some(t) = f.track.as_mut()
+        {
+            t.finish();
+        }
     }
 
     pub fn verdicts(&self) -> &[Verdict] {
@@ -135,8 +161,19 @@ impl SessionWriter {
         }
     }
 
-    pub fn pose(&mut self, serial: &str, f: &FrameSample) {
-        let Some(file) = self.files.as_mut().and_then(|x| x.poses.as_mut()) else {
+    pub fn pose(&mut self, serial: &str, class: DeviceClass, f: &FrameSample) {
+        let Some(files) = self.files.as_mut() else {
+            return;
+        };
+        if let Some(t) = files.track.as_mut() {
+            t.frame(
+                serial,
+                class,
+                f.t_ms,
+                Sample::new(0, f.pos, quat(&f.rot), f.state, f.valid),
+            );
+        }
+        let Some(file) = files.poses.as_mut() else {
             return;
         };
         if self
@@ -164,11 +201,54 @@ impl SessionWriter {
         self.all_verdicts.push(v.clone());
     }
 
+    pub fn packets(&mut self, lines: &[crate::signals::packets::Line]) {
+        let Some(f) = self.files.as_mut() else {
+            return;
+        };
+        if f.packets.is_none() {
+            f.packets = std::fs::File::create(self.dir.join(PACKETS_FILE))
+                .inspect_err(|e| crate::dlog!("couldn't create {PACKETS_FILE}: {e}"))
+                .ok();
+        }
+        let Some(file) = f.packets.as_mut() else {
+            return;
+        };
+        let mut uncounted = 0;
+        for l in lines {
+            if let Ok(line) = serde_json::to_string(l) {
+                write_line(file, &mut uncounted, &line);
+            }
+        }
+    }
+
+    pub fn raw_log(&mut self, lines: &[String]) {
+        let Some(f) = self.files.as_mut() else {
+            return;
+        };
+        if f.raw_log.is_none() {
+            f.raw_log = std::fs::File::create(self.dir.join(RAW_LOG_FILE))
+                .inspect_err(|e| crate::dlog!("couldn't create {RAW_LOG_FILE}: {e}"))
+                .ok();
+        }
+        let Some(file) = f.raw_log.as_mut() else {
+            return;
+        };
+        let mut uncounted = 0;
+        for l in lines {
+            write_line(file, &mut uncounted, l);
+        }
+    }
+
+    pub fn set_packets(&self, totals: &[crate::signals::packets::Totals]) {
+        self.write_json(PACKETS_SUMMARY, &totals);
+    }
+
     fn write_json<T: serde::Serialize>(&self, name: &str, value: &T) {
         if self.files.is_some()
             && let Ok(text) = serde_json::to_string_pretty(value)
+            && let Err(e) = std::fs::write(self.dir.join(name), text)
         {
-            let _ = std::fs::write(self.dir.join(name), text);
+            crate::dlog!("couldn't write {name}: {e}");
         }
     }
 
@@ -184,6 +264,10 @@ impl SessionWriter {
         self.write_json("bases.json", &bases);
     }
 
+    pub fn set_room(&self, bases: &[crate::engine::BasePose]) {
+        self.write_json("room.json", &bases);
+    }
+
     pub fn write_report(&self, text: &str, flaps: &FlapSummary) -> anyhow::Result<PathBuf> {
         let path = self.dir.join("report.txt");
         if self.files.is_some() {
@@ -197,27 +281,13 @@ impl SessionWriter {
     }
 
     pub fn discard_if_empty(&mut self) -> bool {
-        if self.files.is_none() || self.bytes > 0 {
+        if self.files.is_none() || self.bytes_written() > 0 {
             return false;
         }
         self.files = None;
-        for f in SESSION_FILES {
-            let _ = std::fs::remove_file(self.dir.join(f));
-        }
-        std::fs::remove_dir(&self.dir).is_ok()
+        crate::store::delete(&self.dir).is_ok()
     }
 }
-
-const SESSION_FILES: [&str; 8] = [
-    "events.jsonl",
-    "verdicts.jsonl",
-    "poses.csv",
-    "devices.json",
-    "usb.json",
-    "bases.json",
-    "report.txt",
-    "flaps.json",
-];
 
 pub fn fmt_clock(ms: u64) -> String {
     let s = ms / 1000;
@@ -227,21 +297,42 @@ pub fn fmt_clock(ms: u64) -> String {
 pub fn incident(v: &Verdict) -> String {
     let mut parts = Vec::new();
     if let Some(d) = v.duration_ms {
-        parts.push(format!("outage {}", fmt_dur(d)));
+        parts.push(format!("lost for {}", fmt_dur(d)));
     }
     match v.pose_valid {
-        Some(true) => parts.push("pose stayed valid".to_string()),
-        Some(false) => parts.push("pose lost".to_string()),
+        Some(true) => parts.push("position stayed valid".to_string()),
+        Some(false) => parts.push("no position".to_string()),
         None => {}
     }
-    if !v.tags.is_empty() {
-        let tags: Vec<String> = v.tags.iter().map(|t| format!("{t:?}")).collect();
-        parts.push(format!("tags {}", tags.join("+")));
+    for t in &v.tags {
+        parts.push(
+            match t {
+                Tag::Standby => "during standby",
+                Tag::OvrRecenter => "around a recenter",
+                Tag::BaseMoved => "while SteamVR moved a base",
+            }
+            .to_string(),
+        );
     }
     if parts.is_empty() {
         String::new()
     } else {
-        format!(" | {}", parts.join(", "))
+        format!(". {}", capitalize(&parts.join(", ")))
+    }
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+pub fn cause_heading(v: &Verdict) -> String {
+    let cause = summary::plain_cause(&v.cause);
+    if v.cause == crate::correlate::Cause::Unknown {
+        cause
+    } else {
+        format!("{cause} ({})", summary::confidence_word(v.confidence))
     }
 }
 
@@ -256,10 +347,9 @@ pub fn incidents_text(verdicts: &[Verdict], t0: u64, label: &dyn Fn(&str) -> Str
             l => format!("{} ({l})", v.device),
         };
         out.push_str(&format!(
-            "{} {who} | {} ({}){}\n    {}\n",
+            "{} {who}: {}{}\n    {}\n",
             fmt_clock(v.t_start_ms.saturating_sub(t0)),
-            summary::plain_cause(&v.cause),
-            summary::confidence_word(v.confidence),
+            cause_heading(v),
             incident(v),
             v.cause.describe()
         ));
@@ -279,7 +369,7 @@ fn flaps_text(f: &FlapSummary) -> String {
         return "None.\n".into();
     }
     let mut out = format!(
-        "Tracking left RunningOk for under {} ms with a valid pose. Counted, not listed as incidents.\n",
+        "Brief flickers: tracking dropped for under {} ms while the position stayed valid. They are counted here and left out of the incident list.\n",
         f.threshold_ms
     );
     let minutes = f.span_ms as f64 / 60_000.0;
@@ -290,7 +380,7 @@ fn flaps_text(f: &FlapSummary) -> String {
             String::new()
         };
         out.push_str(&format!(
-            "  {dev}: {} flaps{rate}, mean {} ms, max {} ms\n",
+            "  {dev}: {} flickers{rate}, mean {} ms, max {} ms\n",
             s.count,
             s.total_ms / s.count.max(1),
             s.max_ms
@@ -330,13 +420,7 @@ pub fn compose(engine: &Engine, s: &Summary) -> String {
     }
 
     out.push_str("\n== Base stations ==\n");
-    let seen: Vec<String> = engine
-        .devices
-        .iter()
-        .filter(|d| d.class == DeviceClass::TrackingReference)
-        .map(|d| d.serial.clone())
-        .collect();
-    out.push_str(&bases::section(&engine.base_moves, &engine.base_db, &seen));
+    out.push_str(&base_section(engine));
 
     out.push_str("\n== Devices seen ==\n");
     if engine.devices.is_empty() {
@@ -372,13 +456,13 @@ pub fn latest_session() -> Option<PathBuf> {
     std::fs::read_dir(sessions_dir())
         .ok()?
         .filter_map(Result::ok)
-        .filter(|e| std::fs::metadata(e.path().join("events.jsonl")).is_ok_and(|m| m.len() > 0))
+        .filter(|e| crate::store::has(&e.path(), "events.jsonl"))
         .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
         .map(|e| e.path())
 }
 
 fn old_roster(dir: &Path) -> Vec<DeviceRecord> {
-    let Ok(text) = std::fs::read_to_string(dir.join("report.txt")) else {
+    let Some(text) = crate::store::read_text(dir, "report.txt") else {
         return Vec::new();
     };
     text.lines()
@@ -448,7 +532,50 @@ fn inferred_roster(events: &[SignalEvent], lookup: ModelLookup) -> Vec<DeviceRec
     out
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+pub fn base_section(engine: &Engine) -> String {
+    let seen: Vec<String> = engine
+        .devices
+        .iter()
+        .filter(|d| d.class == DeviceClass::TrackingReference)
+        .map(|d| d.serial.clone())
+        .collect();
+    let mut out = bases::section(&engine.base_moves, &engine.base_db, &seen);
+    out.push_str(&sight_section(&engine.diagnosis.sight));
+    out
+}
+
+pub fn sight_section(s: &crate::sight::Sight) -> String {
+    let bases = s.bases();
+    if bases.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "How often your devices lost sight of each base, and how much of the time they had it in view:\n",
+    );
+    for b in &bases {
+        let id = b.id.clone().unwrap_or_else(|| "unknown".into());
+        let top = b
+            .worst
+            .first()
+            .map_or_else(String::new, |(d, n)| format!(", most by {d} ({n})"));
+        out.push_str(&format!(
+            "  {id:<8} ch {:<2}  lost {:>4} times  in view {:>3.0}%{top}\n",
+            b.ch,
+            b.drops,
+            b.share * 100.0
+        ));
+    }
+    let low = s.low();
+    if !low.is_empty() {
+        out.push_str("Time each device was seen by one base or none, when tracking gets shaky:\n");
+        for d in low.iter().take(6) {
+            out.push_str(&format!("  {:<14} {}\n", d.serial, fmt_dur(d.low_ms)));
+        }
+    }
+    out
+}
+
+pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
@@ -501,7 +628,7 @@ fn replay_with(
     log: Option<&Path>,
     lookup: ModelLookup,
 ) -> anyhow::Result<Replay> {
-    let text = std::fs::read_to_string(dir.join("events.jsonl"))
+    let text = crate::store::read_text(dir, "events.jsonl")
         .with_context(|| format!("no events.jsonl in {}", dir.display()))?;
     let mut skipped = 0;
     let mut events: Vec<SignalEvent> = text
@@ -578,6 +705,7 @@ mod tests {
             tags,
             evidence: vec![],
             alternates: vec![],
+            pos: None,
         }
     }
 
@@ -620,12 +748,12 @@ mod tests {
         );
         assert!(
             text.starts_with(
-                "+0:01:00 LHR-A (left foot) | dropout, cause unclear (unsure) | outage 1m 14s, pose lost, tags Standby\n"
+                "+0:01:00 LHR-A (left foot): dropout, cause unclear. Lost for 1m 14s, no position, during standby\n"
             ),
             "{text}"
         );
         assert!(
-            text.contains("| outage 0.6s, pose stayed valid\n"),
+            text.contains(". Lost for 0.6s, position stayed valid\n"),
             "{text}"
         );
     }
@@ -649,7 +777,7 @@ mod tests {
         };
         let text = flaps_text(&flaps);
         assert!(
-            text.contains("LHR-A: 30 flaps, 3.0/min, mean 91 ms, max 480 ms"),
+            text.contains("LHR-A: 30 flickers, 3.0/min, mean 91 ms, max 480 ms"),
             "{text}"
         );
     }
@@ -674,9 +802,9 @@ mod tests {
         let dir = temp_dir("poses");
         let mut s = SessionWriter::in_dir(dir.clone(), true).unwrap();
         for t in [1000, 1050, 1099, 1100, 1150, 1201] {
-            s.pose("LHR-A", &sample(t));
+            s.pose("LHR-A", DeviceClass::GenericTracker, &sample(t));
         }
-        s.pose("LHR-B", &sample(1050));
+        s.pose("LHR-B", DeviceClass::GenericTracker, &sample(1050));
         let text = std::fs::read_to_string(dir.join("poses.csv")).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], POSE_HEADER);
@@ -695,11 +823,20 @@ mod tests {
             "{text}"
         );
         assert_eq!(lines.len(), 5);
-        let on_disk: u64 = ["events.jsonl", "verdicts.jsonl", "poses.csv"]
+        let text: u64 = ["events.jsonl", "verdicts.jsonl", "poses.csv"]
             .iter()
             .map(|f| std::fs::metadata(dir.join(f)).unwrap().len())
             .sum();
-        assert_eq!(s.bytes_written(), on_disk);
+        let moved = s.bytes_written() - text;
+        assert!(moved > 0);
+        s.close();
+        let track = std::fs::metadata(dir.join(crate::track::RAW_FILE))
+            .unwrap()
+            .len();
+        assert!(
+            moved <= track - crate::track::TrackWriter::HEADER,
+            "{moved} vs {track}"
+        );
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -708,9 +845,16 @@ mod tests {
     fn poses_off_by_default_and_memory_writes_nothing() {
         let dir = temp_dir("noposes");
         let mut s = SessionWriter::in_dir(dir.clone(), false).unwrap();
-        s.pose("LHR-A", &sample(1000));
+        s.pose("LHR-A", DeviceClass::GenericTracker, &sample(1000));
         assert!(!dir.join("poses.csv").exists());
-        assert_eq!(s.bytes_written(), 0);
+        assert!(s.bytes_written() > 0);
+        s.close();
+        assert!(
+            crate::store::read_track(&dir)
+                .unwrap()
+                .device("LHR-A")
+                .is_some()
+        );
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -883,7 +1027,7 @@ Tue Oct 06 2026 19:38:27.394 [Info] - lighthouse: D373DE2627: Packet received af
         assert_eq!(rows[1].incidents, 0);
         let text = r.engine.report_text();
         assert!(text.contains("== Summary =="), "{text}");
-        assert!(text.contains("LHR-A (left controller) |"), "{text}");
+        assert!(text.contains("LHR-A (left controller):"), "{text}");
         assert!(text.contains("+0:01:00"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -108,9 +108,9 @@ jobs:
           extra: |
             ### Download
 
-            - `${{ steps.package.outputs.setupname }}` (${{ steps.package.outputs.setupsize }} MiB) - installer; TrackDoctor then starts with SteamVR on its own
+            - `${{ steps.package.outputs.setupname }}` (${{ steps.package.outputs.setupsize }} MiB) - installer; after that TrackDoctor opens its window when SteamVR starts
             - SHA256 `${{ steps.package.outputs.setupsha256 }}`
-            - `${{ steps.package.outputs.zipname }}` (${{ steps.package.outputs.zipsize }} MiB) - portable zip; run `trackdoctor autostart on` from it to start with SteamVR
+            - `${{ steps.package.outputs.zipname }}` (${{ steps.package.outputs.zipsize }} MiB) - portable zip; open `trackdoctor.exe` once while SteamVR is running and it adds itself to SteamVR's startup apps
             - SHA256 `${{ steps.package.outputs.zipsha256 }}`
 
       - name: Publish release

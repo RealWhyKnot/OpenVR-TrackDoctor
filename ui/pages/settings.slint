@@ -1,0 +1,152 @@
+import { Theme } from "../theme.slint";
+import { Settings, Status } from "../state.slint";
+import { Check } from "../widgets/check.slint";
+import { Field } from "../widgets/field.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+import { Link } from "../widgets/link.slint";
+
+component Heading inherits Text {
+    font-size: 15px;
+    font-weight: 700;
+    color: Theme.gray-200;
+}
+
+component Note inherits Text {
+    font-size: 12px;
+    wrap: word-wrap;
+    color: Theme.gray-500;
+}
+
+export component SettingsPage inherits Rectangle {
+    clip: true;
+    Flickable {
+        content-width: self.width;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            width: parent.width;
+            spacing: 8px;
+            alignment: start;
+            Heading {
+                text: "Recording";
+            }
+            Check {
+                text: "Open TrackDoctor when SteamVR starts";
+                enabled: !Settings.steamvr-busy;
+                checked <=> Settings.open-with-steamvr;
+                toggled(on) => {
+                    Settings.steamvr-toggled(on);
+                }
+            }
+            if Settings.steamvr-note != "": Note {
+                text: Settings.steamvr-note;
+            }
+            Check {
+                text: "Also save raw positions (poses.csv, about 10 per second per device)";
+                checked <=> Settings.save-poses;
+                toggled(on) => {
+                    Settings.poses-toggled(on);
+                }
+            }
+            Note {
+                text: "Only useful when you send a session to someone to look at. It starts with the next SteamVR run.";
+            }
+            Note {
+                text: "TrackDoctor records while this window is open and stops when you close it. Nothing keeps running after that.";
+            }
+            Rectangle {
+                height: 8px;
+            }
+            Heading {
+                text: "Device names";
+            }
+            Note {
+                text: "Give each tracker a name you will recognise, like left foot or waist. Press Enter to save; names show up on every page right away.";
+            }
+            if Settings.names.length == 0: Note {
+                text: "Devices show up here once SteamVR has seen them.";
+            }
+            for n in Settings.names: HorizontalLayout {
+                height: 26px;
+                spacing: 8px;
+                Text {
+                    width: 120px;
+                    vertical-alignment: center;
+                    font-family: Theme.mono;
+                    font-size: 12px;
+                    color: Theme.gray-400;
+                    text: n.serial;
+                }
+                Text {
+                    width: 260px;
+                    vertical-alignment: center;
+                    font-size: 12px;
+                    color: Theme.gray-500;
+                    overflow: elide;
+                    text: n.kind;
+                }
+                VerticalLayout {
+                    width: 220px;
+                    alignment: center;
+                    Field {
+                        text: n.name;
+                        placeholder: "no name";
+                        accepted(t) => {
+                            Settings.rename(n.serial, t);
+                        }
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle {
+                height: 8px;
+            }
+            Heading {
+                text: "Files";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.gray-400;
+                    text: Settings.data-dir;
+                }
+                Link {
+                    text: "Open";
+                    clicked => {
+                        Settings.open-data();
+                    }
+                }
+            }
+            Rectangle {
+                height: 8px;
+            }
+            Heading {
+                text: "Updates";
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.gray-400;
+                    text: "TrackDoctor " + Status.version;
+                }
+                SmallButton {
+                    width: 150px;
+                    text: "Check for updates";
+                    clicked => {
+                        Settings.check-updates();
+                    }
+                }
+            }
+            if Settings.update-note != "": Note {
+                text: Settings.update-note;
+            }
+        }
+    }
+}

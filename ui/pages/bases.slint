@@ -1,0 +1,35 @@
+import { Theme } from "../theme.slint";
+import { Bases } from "../state.slint";
+
+export component BasesPage inherits Rectangle {
+    clip: true;
+    Flickable {
+        content-width: max(self.width, body.preferred-width);
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text {
+                font-size: 13px;
+                color: Theme.gray-500;
+                text: "How far SteamVR moved each base station, session by session. A base that keeps moving was knocked, or the saved map no longer fits the room.";
+                wrap: word-wrap;
+                width: root.width;
+            }
+            Rectangle {
+                background: Theme.gray-800;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 1px;
+                    for l in Bases.lines: Text {
+                        font-family: Theme.mono;
+                        font-size: 13px;
+                        color: Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                }
+            }
+        }
+    }
+}

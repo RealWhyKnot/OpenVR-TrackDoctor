@@ -1,6 +1,5 @@
 use crate::update::system_tool;
 use anyhow::{Context, bail};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -51,7 +50,7 @@ fn close_steamvr() -> anyhow::Result<()> {
     while steamvr_running() {
         if start.elapsed() > CLOSE_TIMEOUT {
             bail!(
-                "SteamVR is still running after {} seconds. Close it yourself, then run trackdoctor resetmap again.",
+                "SteamVR is still running after {} seconds. Close it yourself, then try again.",
                 CLOSE_TIMEOUT.as_secs()
             );
         }
@@ -85,16 +84,6 @@ pub fn back_up(db: &Path, stamp: &str) -> anyhow::Result<PathBuf> {
     Ok(to)
 }
 
-pub fn confirm(prompt: &str) -> bool {
-    print!("{prompt} [y/N]: ");
-    let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return false;
-    }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
-}
-
 pub fn explain(running: bool) -> String {
     let steps = if running {
         "This closes SteamVR and whatever game is running in it, renames SteamVR's saved base station map so a backup is kept, and starts SteamVR again."
@@ -106,51 +95,35 @@ pub fn explain(running: bool) -> String {
     )
 }
 
-pub fn run(asked: bool) -> anyhow::Result<()> {
+pub fn run(say: &mut dyn FnMut(String)) -> anyhow::Result<()> {
     let db = crate::signals::logtail::lighthouse_db_path()
         .context("cannot find SteamVR's config folder")?;
     if !db.exists() {
-        println!(
+        say(format!(
             "There's no saved base station map at {}. SteamVR builds one when it starts.",
             db.display()
-        );
+        ));
         return Ok(());
-    }
-    if !asked {
-        println!("{}", explain(steamvr_running()));
-        if !confirm("Reset the base station map now?") {
-            println!("Left the map as it is.");
-            return Ok(());
-        }
     }
     let running = steamvr_running();
     if running {
-        println!("Closing SteamVR...");
+        say("Closing SteamVR...".into());
         close_steamvr()?;
     }
     let backup = back_up(&db, &crate::win::local_stamp())?;
-    println!("Moved the old map to {}.", backup.display());
+    say(format!("Moved the old map to {}.", backup.display()));
     if running {
         start_steamvr()?;
-        println!("Starting SteamVR again.");
+        say("Starting SteamVR again.".into());
     }
-    println!(
+    say(format!(
         "To undo, close SteamVR and rename {} back to lighthousedb.json.",
         backup
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
-    );
+    ));
     Ok(())
-}
-
-pub fn command() -> anyhow::Result<()> {
-    let result = run(false);
-    if let Err(e) = &result {
-        eprintln!("{e:#}");
-    }
-    crate::win::pause_if_own_console();
-    result
 }
 
 #[cfg(test)]

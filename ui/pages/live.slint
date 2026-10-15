@@ -1,0 +1,216 @@
+import { Theme } from "../theme.slint";
+import { Live } from "../state.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+
+component Cell inherits Text {
+    vertical-alignment: center;
+    font-size: 13px;
+    overflow: elide;
+}
+
+component Head inherits Cell {
+    color: Theme.gray-500;
+    font-size: 12px;
+}
+
+export component LivePage inherits Rectangle {
+    VerticalLayout {
+        spacing: 10px;
+        Rectangle {
+            background: Theme.gray-800;
+            border-radius: 6px;
+            height: min(table.preferred-height, root.height * 0.55);
+            clip: true;
+            Flickable {
+            content-height: table.preferred-height;
+            table := VerticalLayout {
+                padding: 8px;
+                alignment: start;
+                HorizontalLayout {
+                    height: 20px;
+                    spacing: 8px;
+                    Head {
+                        width: 130px;
+                        text: "Device";
+                    }
+                    Head {
+                        horizontal-stretch: 1;
+                        text: "Name";
+                    }
+                    Head {
+                        width: 150px;
+                        text: "Tracking";
+                    }
+                    Head {
+                        width: 54px;
+                        text: "Position";
+                    }
+                    Head {
+                        width: 52px;
+                        text: "Battery";
+                    }
+                    Head {
+                        width: 50px;
+                        text: "Flickers";
+                    }
+                    Head {
+                        width: 64px;
+                        text: "Incidents";
+                    }
+                    Head {
+                        width: 96px;
+                        text: "Dongle";
+                    }
+                }
+                if Live.devices.length == 0: Text {
+                    height: 28px;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.gray-400;
+                    text: Live.empty;
+                }
+                for d in Live.devices: HorizontalLayout {
+                    height: 22px;
+                    spacing: 8px;
+                    Cell {
+                        width: 130px;
+                        text: d.serial;
+                        color: Theme.gray-400;
+                        font-family: Theme.mono;
+                        font-size: 12px;
+                    }
+                    Cell {
+                        horizontal-stretch: 1;
+                        text: d.name;
+                        color: Theme.gray-200;
+                    }
+                    Cell {
+                        width: 150px;
+                        text: d.state;
+                        color: Theme.tone(d.tone);
+                    }
+                    Cell {
+                        width: 54px;
+                        text: d.pose;
+                        color: d.pose == "lost" ? Theme.red-400 : Theme.gray-400;
+                    }
+                    Cell {
+                        width: 52px;
+                        text: d.battery;
+                        color: Theme.gray-400;
+                    }
+                    Cell {
+                        width: 50px;
+                        text: d.flaps;
+                        color: Theme.gray-400;
+                    }
+                    Cell {
+                        width: 64px;
+                        text: d.incidents;
+                        color: d.incidents != "" && d.incidents != "0" ? Theme.amber-400 : Theme.gray-400;
+                    }
+                    Cell {
+                        width: 96px;
+                        text: d.dongle;
+                        color: Theme.gray-500;
+                        font-family: Theme.mono;
+                        font-size: 12px;
+                    }
+                }
+            }
+            }
+        }
+        HorizontalLayout {
+            height: Live.past ? 28px : 16px;
+            spacing: 6px;
+            if Live.past: SmallButton {
+                width: 90px;
+                text: "Incidents";
+                active: Live.mode == 0;
+                clicked => {
+                    Live.mode = 0;
+                }
+            }
+            if Live.past: SmallButton {
+                width: 110px;
+                text: "Every event";
+                active: Live.mode == 1;
+                clicked => {
+                    Live.mode = 1;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                font-size: 13px;
+                color: Theme.gray-500;
+                text: Live.past && Live.mode == 1 ? Live.log-where : Live.past ? "  Incidents, newest first" : "What happened, newest first";
+            }
+            if Live.past && Live.mode == 1: SmallButton {
+                width: 80px;
+                text: "Earlier";
+                enabled: Live.log-older;
+                clicked => {
+                    Live.log-page(-1);
+                }
+            }
+            if Live.past && Live.mode == 1: SmallButton {
+                width: 80px;
+                text: "Later";
+                enabled: Live.log-newer;
+                clicked => {
+                    Live.log-page(1);
+                }
+            }
+        }
+        if Live.past && Live.mode == 1: Rectangle {
+            vertical-stretch: 1;
+            background: Theme.gray-800;
+            border-radius: 6px;
+            clip: true;
+            Flickable {
+                property <string> at: Live.log-where;
+                changed at => {
+                    self.content-y = 0;
+                }
+                content-height: log.preferred-height;
+                log := VerticalLayout {
+                    padding: 8px;
+                    spacing: 1px;
+                    alignment: start;
+                    for l in Live.log: Text {
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        color: Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                }
+            }
+        }
+        if !Live.past || Live.mode == 0: Rectangle {
+            vertical-stretch: 1;
+            background: Theme.gray-800;
+            border-radius: 6px;
+            clip: true;
+            Flickable {
+                content-height: feed.preferred-height;
+                feed := VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    alignment: start;
+                    if Live.feed.length == 0: Text {
+                        font-size: 13px;
+                        color: Theme.gray-500;
+                        text: "Nothing yet. Dropouts, jumps and radio trouble show up here as they happen.";
+                    }
+                    for l in Live.feed: Text {
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        color: Theme.tone(l.tone);
+                        text: l.text;
+                    }
+                }
+            }
+        }
+    }
+}

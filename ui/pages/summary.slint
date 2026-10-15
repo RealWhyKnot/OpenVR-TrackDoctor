@@ -1,0 +1,242 @@
+import { Theme } from "../theme.slint";
+import { Report, ResetMap, Finding } from "../state.slint";
+import { SmallButton } from "../widgets/small-button.slint";
+
+component Cell inherits Text {
+    vertical-alignment: center;
+    font-size: 13px;
+    overflow: elide;
+}
+
+component Head inherits Cell {
+    color: Theme.gray-500;
+    font-size: 12px;
+}
+
+component Heading inherits Text {
+    font-size: 15px;
+    font-weight: 700;
+    color: Theme.gray-200;
+}
+
+component Card inherits Rectangle {
+    in property <Finding> f;
+    background: Theme.gray-800;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.tone(f.tone).transparentize(0.6);
+    VerticalLayout {
+        padding: 12px;
+        spacing: 6px;
+        Text {
+            font-size: 15px;
+            font-weight: 700;
+            wrap: word-wrap;
+            color: Theme.tone(f.tone);
+            text: f.title;
+        }
+        Text {
+            font-size: 13px;
+            wrap: word-wrap;
+            color: Theme.gray-200;
+            text: f.what;
+        }
+        if f.steps.length > 0: Text {
+            font-size: 12px;
+            font-weight: 700;
+            color: Theme.gray-400;
+            text: "What to try";
+        }
+        for step[i] in f.steps: HorizontalLayout {
+            spacing: 6px;
+            Text {
+                width: 18px;
+                font-size: 13px;
+                color: Theme.gray-400;
+                horizontal-alignment: right;
+                text: (i + 1) + ".";
+            }
+            Text {
+                horizontal-stretch: 1;
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.gray-200;
+                text: step;
+            }
+        }
+        if f.reset: HorizontalLayout {
+            alignment: start;
+            padding-top: 2px;
+            SmallButton {
+                width: 230px;
+                text: "Reset the base station map...";
+                clicked => {
+                    Report.reset-map();
+                }
+            }
+        }
+    }
+}
+
+export component SummaryPage inherits Rectangle {
+    clip: true;
+    Flickable {
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+            for f in Report.findings: Card {
+                f: f;
+            }
+            Heading {
+                text: "Details";
+            }
+            Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.cyan-400;
+                text: Report.heading;
+            }
+            Rectangle {
+                background: Theme.gray-800;
+                border-radius: 6px;
+                VerticalLayout {
+                    padding: 8px;
+                    HorizontalLayout {
+                        height: 20px;
+                        spacing: 8px;
+                        Head {
+                            width: 22px;
+                            text: "#";
+                        }
+                        Head {
+                            horizontal-stretch: 1;
+                            text: "Device";
+                        }
+                        Head {
+                            width: 150px;
+                            text: "Not tracking";
+                        }
+                        Head {
+                            width: 64px;
+                            text: "Incidents";
+                            horizontal-alignment: right;
+                        }
+                        Head {
+                            width: 56px;
+                            text: "Flickers/h";
+                            horizontal-alignment: right;
+                        }
+                        Head {
+                            width: 230px;
+                            text: "Main cause";
+                        }
+                    }
+                    if Report.ranks.length == 0: Text {
+                        height: 26px;
+                        vertical-alignment: center;
+                        font-size: 13px;
+                        color: Theme.gray-500;
+                        text: Report.empty;
+                    }
+                    for r in Report.ranks: HorizontalLayout {
+                        height: 24px;
+                        spacing: 8px;
+                        Cell {
+                            width: 22px;
+                            text: r.rank;
+                            font-weight: 700;
+                            color: Theme.tone(r.tone);
+                        }
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 6px;
+                            Cell {
+                                width: 116px;
+                                text: r.serial;
+                                color: Theme.gray-400;
+                                font-family: Theme.mono;
+                                font-size: 12px;
+                            }
+                            Cell {
+                                text: r.name;
+                                color: Theme.gray-200;
+                            }
+                        }
+                        HorizontalLayout {
+                            width: 150px;
+                            spacing: 6px;
+                            Rectangle {
+                                width: 70px;
+                                Rectangle {
+                                    x: 0;
+                                    y: (parent.height - 8px) / 2;
+                                    height: 8px;
+                                    border-radius: 2px;
+                                    background: Theme.gray-700;
+                                }
+                                Rectangle {
+                                    x: 0;
+                                    y: (parent.height - 8px) / 2;
+                                    width: parent.width * r.share;
+                                    height: 8px;
+                                    border-radius: 2px;
+                                    background: Theme.tone(r.tone);
+                                }
+                            }
+                            Cell {
+                                text: r.lost;
+                                color: Theme.tone(r.tone);
+                            }
+                        }
+                        Cell {
+                            width: 64px;
+                            text: r.incidents;
+                            horizontal-alignment: right;
+                            color: Theme.gray-200;
+                        }
+                        Cell {
+                            width: 56px;
+                            text: r.flaps;
+                            horizontal-alignment: right;
+                            color: Theme.gray-200;
+                        }
+                        Cell {
+                            width: 230px;
+                            text: r.main;
+                            color: Theme.gray-400;
+                        }
+                    }
+                }
+            }
+            for n in Report.notes: Text {
+                font-size: 13px;
+                wrap: word-wrap;
+                color: Theme.tone(n.tone);
+                text: n.text;
+            }
+            if Report.bases.length > 0: VerticalLayout {
+                spacing: 6px;
+                padding-top: 4px;
+                Heading {
+                    text: "Base stations";
+                }
+                Rectangle {
+                    background: Theme.gray-800;
+                    border-radius: 6px;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 1px;
+                        for l in Report.bases: Text {
+                            font-family: Theme.mono;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            color: Theme.tone(l.tone);
+                            text: l.text;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

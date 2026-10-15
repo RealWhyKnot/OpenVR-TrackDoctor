@@ -1,10 +1,17 @@
+use crate::gui::config::Config;
 use anyhow::{Context, anyhow, bail};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
 pub const APP_KEY: &str = "whyknot.TrackDoctor";
 pub const MANIFEST: &str = "manifest.vrmanifest";
-pub const BG_EXE: &str = "trackdoctor-bg.exe";
+pub const EXE: &str = "trackdoctor.exe";
+pub const LAUNCH_FLAG: &str = "--steamvr";
+pub const REGISTER_FLAG: &str = "--register-steamvr";
+pub const ENABLE_FLAG: &str = "--enable-steamvr";
+const OLD_EXE: &str = "trackdoctor-bg.exe";
+pub const UNREGISTER_FLAG: &str = "--unregister-steamvr";
+pub const NOT_AVAILABLE: i32 = 3;
 
 pub fn manifest_json() -> String {
     format!(
@@ -13,13 +20,14 @@ pub fn manifest_json() -> String {
 	"applications": [{{
 		"app_key": "{APP_KEY}",
 		"launch_type": "binary",
-		"binary_path_windows": "{BG_EXE}",
+		"binary_path_windows": "{EXE}",
+		"arguments": "{LAUNCH_FLAG}",
 		"is_dashboard_overlay": true,
 
 		"strings": {{
 			"en_us": {{
 				"name": "TrackDoctor",
-				"description": "Records why trackers glitch while you are in VR"
+				"description": "Shows why trackers glitch while you are in VR"
 			}}
 		}}
 	}}]
@@ -43,7 +51,7 @@ struct Apps {
 impl Apps {
     fn open() -> anyhow::Result<Self> {
         let ctx = unsafe { openvr::init(openvr::ApplicationType::Utility) }
-            .map_err(|e| anyhow!("SteamVR is not available ({e:?})"))?;
+            .map_err(|e| anyhow!("{UNAVAILABLE} ({e:?})"))?;
         let mut name = b"FnTable:".to_vec();
         name.extend_from_slice(openvr_sys::IVRApplications_Version);
         let mut err = openvr_sys::EVRInitError_VRInitError_None;
@@ -115,17 +123,8 @@ fn cstr(s: &str) -> anyhow::Result<CString> {
 
 pub fn enable() -> anyhow::Result<String> {
     let dir = install_dir()?;
-    if !dir.join(BG_EXE).is_file() {
-        bail!(
-            "{BG_EXE} is missing next to trackdoctor.exe in {}",
-            dir.display()
-        );
-    }
     let manifest = dir.join(MANIFEST);
-    if std::fs::read_to_string(&manifest).ok().as_deref() != Some(manifest_json().as_str()) {
-        std::fs::write(&manifest, manifest_json())
-            .with_context(|| format!("write {}", manifest.display()))?;
-    }
+    write_manifest(&manifest)?;
     let apps = Apps::open()?;
     let key = cstr(APP_KEY)?;
     apps.add(&cstr(&manifest.to_string_lossy())?)?;
@@ -133,11 +132,106 @@ pub fn enable() -> anyhow::Result<String> {
     if !apps.auto_launch(&key) {
         bail!("SteamVR accepted the manifest but did not keep auto-launch on");
     }
-    Ok(format!(
-        "TrackDoctor will start with SteamVR and record in the background.\nManifest: {}",
-        manifest.display()
-    ))
+    Ok("TrackDoctor opens with SteamVR.".into())
 }
+
+fn write_manifest(manifest: &Path) -> anyhow::Result<()> {
+    if std::fs::read_to_string(manifest).ok().as_deref() != Some(manifest_json().as_str()) {
+        std::fs::write(manifest, manifest_json())
+            .with_context(|| format!("write {}", manifest.display()))?;
+    }
+    Ok(())
+}
+
+pub fn refresh_manifest() {
+    if let Ok(dir) = install_dir() {
+        let manifest = dir.join(MANIFEST);
+        if manifest.is_file() {
+            note_old_manifest(&manifest);
+            let _ = write_manifest(&manifest);
+        }
+    }
+}
+
+fn note_old_manifest(manifest: &Path) {
+    if std::fs::read_to_string(manifest).is_ok_and(|t| t.contains(OLD_EXE)) {
+        let mut config = Config::load();
+        if !config.old_manifest {
+            config.old_manifest = true;
+            let _ = config.save();
+        }
+    }
+}
+
+pub fn sync() -> anyhow::Result<String> {
+    if !Config::load().open_with_steamvr {
+        return Ok(String::new());
+    }
+    let dir = install_dir()?;
+    let manifest = dir.join(MANIFEST);
+    note_old_manifest(&manifest);
+    write_manifest(&manifest)?;
+    let apps = Apps::open()?;
+    let key = cstr(APP_KEY)?;
+    let known = apps.installed(&key);
+    let mut config = Config::load();
+    if config.old_manifest {
+        config.old_manifest = false;
+        config.open_with_steamvr = known;
+        config.save()?;
+    }
+    if !config.open_with_steamvr {
+        return Ok(String::new());
+    }
+    apps.add(&cstr(&manifest.to_string_lossy())?)?;
+    if !known {
+        apps.set_auto_launch(&key, true)?;
+    }
+    Ok("TrackDoctor opens with SteamVR.".into())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setup {
+    Sync,
+    Enable,
+    Disable,
+}
+
+impl Setup {
+    pub fn from_args(args: &[String]) -> Option<Self> {
+        [
+            (REGISTER_FLAG, Self::Sync),
+            (ENABLE_FLAG, Self::Enable),
+            (UNREGISTER_FLAG, Self::Disable),
+        ]
+        .into_iter()
+        .find(|(flag, _)| args.iter().any(|a| a == flag))
+        .map(|(_, s)| s)
+    }
+
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Sync => REGISTER_FLAG,
+            Self::Enable => ENABLE_FLAG,
+            Self::Disable => UNREGISTER_FLAG,
+        }
+    }
+}
+
+pub fn setup_command(setup: Setup) -> i32 {
+    let result = match setup {
+        Setup::Sync => sync(),
+        Setup::Enable => enable(),
+        Setup::Disable => disable(),
+    };
+    match result {
+        Ok(_) => 0,
+        Err(e) if e.to_string().starts_with(UNAVAILABLE) => NOT_AVAILABLE,
+        Err(_) => 1,
+    }
+}
+
+const UNAVAILABLE: &str = "SteamVR is not available";
 
 pub fn disable() -> anyhow::Result<String> {
     let dir = install_dir()?;
@@ -146,23 +240,11 @@ pub fn disable() -> anyhow::Result<String> {
     let key = cstr(APP_KEY)?;
     if apps.installed(&key) {
         let _ = apps.set_auto_launch(&key, false);
+        if manifest.is_file() {
+            apps.remove(&cstr(&manifest.to_string_lossy())?)?;
+        }
     }
-    if manifest.is_file() {
-        apps.remove(&cstr(&manifest.to_string_lossy())?)?;
-    }
-    Ok("TrackDoctor no longer starts with SteamVR.".into())
-}
-
-pub fn status() -> anyhow::Result<String> {
-    let apps = Apps::open()?;
-    let key = cstr(APP_KEY)?;
-    Ok(if !apps.installed(&key) {
-        "Not registered with SteamVR. Run: trackdoctor autostart on".into()
-    } else if apps.auto_launch(&key) {
-        "Registered with SteamVR; starts automatically with VR.".into()
-    } else {
-        "Registered with SteamVR, but auto-start is off. Run: trackdoctor autostart on".into()
-    })
+    Ok("TrackDoctor no longer opens with SteamVR.".into())
 }
 
 #[cfg(test)]
@@ -170,11 +252,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn setup_flags_round_trip() {
+        for s in [Setup::Sync, Setup::Enable, Setup::Disable] {
+            assert_eq!(Setup::from_args(&[s.flag().to_string()]), Some(s));
+        }
+        assert_eq!(Setup::from_args(&[LAUNCH_FLAG.to_string()]), None);
+    }
+
+    #[test]
     fn manifest_is_valid_json_with_overlay_flag() {
         let v: serde_json::Value = serde_json::from_str(&manifest_json()).unwrap();
         let app = &v["applications"][0];
         assert_eq!(app["app_key"], APP_KEY);
-        assert_eq!(app["binary_path_windows"], BG_EXE);
+        assert_eq!(app["binary_path_windows"], EXE);
+        assert_eq!(app["arguments"], LAUNCH_FLAG);
         assert_eq!(app["is_dashboard_overlay"], true);
         assert_eq!(app["launch_type"], "binary");
     }

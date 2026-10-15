@@ -1,0 +1,43 @@
+export global Theme {
+    out property <color> gray-900: #111827;
+    out property <color> gray-800: #1f2937;
+    out property <color> gray-700: #374151;
+    out property <color> gray-600: #4b5563;
+    out property <color> gray-500: #6b7280;
+    out property <color> gray-400: #9ca3af;
+    out property <color> gray-200: #e5e7eb;
+    out property <color> red-400: #f87171;
+    out property <color> amber-400: #fbbf24;
+    out property <color> cyan-400: #22d3ee;
+    out property <color> lime-500: #84cc16;
+    out property <color> sky-200: #bae6fd;
+    out property <color> input: #6b72801a;
+    out property <color> selection: #22d3ee55;
+    out property <color> accept: #3f62124d;
+    out property <color> accept-hover: #3f621280;
+    out property <color> decline: #9f12394d;
+    out property <color> decline-hover: #9f123980;
+    out property <string> mono: "Consolas";
+
+    public pure function tone(t: int) -> color {
+        if t == 1 {
+            return root.lime-500;
+        }
+        if t == 2 {
+            return root.amber-400;
+        }
+        if t == 3 {
+            return root.red-400;
+        }
+        if t == 4 {
+            return root.gray-500;
+        }
+        if t == 5 {
+            return root.cyan-400;
+        }
+        if t == 6 {
+            return root.gray-400;
+        }
+        return root.gray-200;
+    }
+}

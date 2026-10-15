@@ -23,19 +23,19 @@ pub enum Cause {
 impl Cause {
     pub fn describe(&self) -> String {
         match self {
-            Self::UsbReset => "USB reset: this device's dongle re-enumerated on the USB bus".into(),
-            Self::UsbBandwidthSuspect => "USB trouble across multiple dongles at once: suspect shared hub/controller bandwidth".into(),
-            Self::RfDropout => "RF dropout: device lost the wireless link to its dongle (USB stayed fine)".into(),
-            Self::OcclusionOneBase(b) => format!("occlusion: lost sight of base station {b}"),
-            Self::OcclusionBothBases => "occlusion: lost sight of all visible base stations".into(),
-            Self::NeverAcquiredBase => "never acquired: device could not bootstrap a pose from any base station".into(),
-            Self::ReflectionJump => "pose jump while everything reported healthy: reflection or solver glitch (probabilistic)".into(),
-            Self::ImuDriftDuringDropout => "IMU dead-reckoning drift during an optical dropout, corrected on reacquire".into(),
-            Self::BaseStandbyOrPowerdown(b) => format!("base station {b} went to standby or powered down (multiple devices affected)"),
-            Self::BaseHardwareFault(b) => format!("base station {b} hardware fault reported by the lighthouse driver"),
-            Self::PlayspaceShift => "coherent shift across devices: playspace/calibration moved (e.g. HMD relocalization), not a device fault".into(),
-            Self::DriverStall => "pose updates stopped while the device stayed nominally healthy: driver or USB stall".into(),
-            Self::Unknown => "anomaly with no matching signal pattern".into(),
+            Self::UsbReset => "Its dongle dropped off USB and came back.".into(),
+            Self::UsbBandwidthSuspect => "Several dongles had USB trouble at the same moment, which points at a shared hub or USB controller running out of bandwidth.".into(),
+            Self::RfDropout => "It lost its wireless link to its dongle while the dongle stayed connected over USB.".into(),
+            Self::OcclusionOneBase(b) => format!("Base {b} lost sight of it."),
+            Self::OcclusionBothBases => "Every base that could see it lost sight of it.".into(),
+            Self::NeverAcquiredBase => "It never got a position from any base station.".into(),
+            Self::ReflectionJump => "It jumped while SteamVR said tracking was fine. That is usually a reflection or a solver glitch, so treat it as a best guess.".into(),
+            Self::ImuDriftDuringDropout => "The bases lost it, so it drifted on its motion sensor alone until they found it again.".into(),
+            Self::BaseStandbyOrPowerdown(b) => format!("Base {b} went to standby or lost power, and several devices dropped with it."),
+            Self::BaseHardwareFault(b) => format!("SteamVR reported a hardware fault on base {b}."),
+            Self::PlayspaceShift => "Everything moved together, usually because the headset re-centred itself. The device itself is fine.".into(),
+            Self::DriverStall => "Its position stopped updating while SteamVR still called it healthy, which points at a driver or USB stall.".into(),
+            Self::Unknown => "Nothing TrackDoctor knows about lined up with it.".into(),
         }
     }
 }
@@ -67,6 +67,8 @@ pub struct Verdict {
     pub tags: Vec<Tag>,
     pub evidence: Vec<String>,
     pub alternates: Vec<Cause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 3]>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -191,10 +193,10 @@ fn is_anomaly(ev: &SignalEvent) -> bool {
 
 fn fmt_evidence(ev: &SignalEvent, t_open: u64) -> String {
     let src = match ev.source {
-        Source::Api => "A",
-        Source::Log => "B",
-        Source::Probe => "C",
-        Source::Usb => "D",
+        Source::Api => "SteamVR",
+        Source::Log => "SteamVR log",
+        Source::Probe => "check",
+        Source::Usb => "USB",
     };
     format!("[{src}] {}: {}", fmt_offset(ev.t_ms, t_open), ev.detail)
 }
@@ -262,6 +264,7 @@ impl Correlator {
                         tags: Vec::new(),
                         evidence: vec![fmt_evidence(ev, ev.t_ms)],
                         alternates: vec![],
+                        pos: None,
                     });
                 }
                 return;
@@ -488,11 +491,11 @@ impl Correlator {
                 if !v.tags.contains(&Tag::Standby) {
                     v.tags.push(Tag::Standby);
                 }
-                let until = e.map_or(" (still in standby)".to_string(), |e| {
+                let until = e.map_or(" and still is".to_string(), |e| {
                     format!(" to {}", fmt_offset(e, v.t_start_ms))
                 });
                 v.evidence.push(format!(
-                    "HMD standby from {}{until}",
+                    "headset in standby from {}{until}",
                     fmt_offset(s, v.t_start_ms)
                 ));
             }
@@ -537,10 +540,8 @@ fn finish_outage(mut h: Held, outage: Option<&Outage>, now_ms: u64) -> Verdict {
         h.v.pose_valid = Some(!o.pose_lost);
         h.v.t_end_ms = h.v.t_end_ms.max(end);
         if o.end.is_none() {
-            h.v.evidence.push(format!(
-                "outage still ongoing after {:.1}s",
-                dur as f32 / 1000.0
-            ));
+            h.v.evidence
+                .push(format!("still lost after {:.1}s", dur as f32 / 1000.0));
         }
     }
     h.v
@@ -665,6 +666,7 @@ fn decide(case: &Case, w: &Window, hmd: Option<&str>, hi: u64, near_ms: u64) -> 
         tags: Vec::new(),
         evidence,
         alternates,
+        pos: None,
     };
 
     let my_removal = w.mine_has(|k| matches!(k, Kind::UsbRemove { .. }));
@@ -841,8 +843,7 @@ fn decide(case: &Case, w: &Window, hmd: Option<&str>, hi: u64, near_ms: u64) -> 
                 && !w.mine_has(|k| *k == Kind::PoseValid(false));
             if kept_tracking {
                 optical_evidence.push(
-                    "device kept RunningOk tracking with a valid pose, so another base carried it"
-                        .into(),
+                    "it kept tracking with a valid position, so another base covered for it".into(),
                 );
                 return verdict(
                     Cause::OcclusionOneBase(base.clone()),
@@ -889,7 +890,7 @@ fn decide(case: &Case, w: &Window, hmd: Option<&str>, hi: u64, near_ms: u64) -> 
         if coherent {
             let mut devices: Vec<&str> = jumpers.into_iter().collect();
             devices.sort_unstable();
-            evidence.push(format!("coherent jumps on: {}", devices.join(", ")));
+            evidence.push(format!("jumped together: {}", devices.join(", ")));
         }
         evidence.extend(w.evidence(|e| matches!(e.kind, Kind::Jump { .. })));
         return verdict(
@@ -1640,7 +1641,7 @@ mod tests {
         );
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].duration_ms, Some(120_000));
-        assert!(v[0].evidence.iter().any(|e| e.contains("still ongoing")));
+        assert!(v[0].evidence.iter().any(|e| e.contains("still lost after")));
     }
 
     #[test]
@@ -1675,7 +1676,11 @@ mod tests {
         assert_eq!(tagged("LHR-BBBB2222"), Some(true), "{v:?}");
         assert_eq!(tagged("LHR-CCCC3333"), Some(false), "{v:?}");
         let mine = v.iter().find(|x| x.device == DEV).unwrap();
-        assert!(mine.evidence.iter().any(|e| e.contains("HMD standby")));
+        assert!(
+            mine.evidence
+                .iter()
+                .any(|e| e.contains("headset in standby"))
+        );
     }
 
     #[test]

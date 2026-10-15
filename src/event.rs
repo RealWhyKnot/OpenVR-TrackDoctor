@@ -129,6 +129,30 @@ pub enum Kind {
         mm: u32,
         deg: f32,
     },
+    BaseSight {
+        ch: u32,
+        gained: bool,
+        seeing: Vec<u32>,
+        ids: Vec<(u32, String)>,
+    },
+    RoomCheck {
+        code: u32,
+    },
+    UpdateAvailable {
+        manual: bool,
+        waiting: bool,
+    },
+    Driver {
+        name: String,
+        status: DriverStatus,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum DriverStatus {
+    Loaded(String),
+    Disabled,
+    Failed(String),
 }
 
 impl std::fmt::Display for Kind {
@@ -136,25 +160,93 @@ impl std::fmt::Display for Kind {
         match self {
             Kind::Jump { meters, accel_mps2 } => write!(
                 f,
-                "pose jump {meters:.3}m (implied accel {accel_mps2:.0} m/s^2)"
+                "jumped {meters:.2} m in one frame ({accel_mps2:.0} m/s\u{b2})"
             ),
             Kind::OrientationJump { rad_per_s } => {
-                write!(f, "orientation jump {rad_per_s:.0} rad/s")
+                write!(
+                    f,
+                    "snapped round at {:.0}\u{b0} a second",
+                    rad_per_s.to_degrees()
+                )
             }
             Kind::Drift { meters, secs } => {
-                write!(f, "dead-reckoning drift {meters:.3}m over {secs:.1}s")
+                write!(
+                    f,
+                    "drifted {meters:.2} m in {secs:.1} s on its motion sensor alone"
+                )
             }
-            Kind::SnapBack { meters } => write!(f, "snap-back correction {meters:.3}m"),
-            Kind::PoseFrozen { ms } => write!(f, "pose frozen for {ms}ms while reported valid"),
+            Kind::SnapBack { meters } => {
+                write!(f, "snapped back {meters:.2} m when the bases found it")
+            }
+            Kind::PoseFrozen { ms } => write!(
+                f,
+                "position stopped updating for {ms} ms while SteamVR still called it valid"
+            ),
             Kind::BatteryLevel { pct } => write!(f, "battery {pct:.0}%"),
-            Kind::TrackingState { from, to } => write!(f, "tracking {from:?} -> {to:?}"),
-            Kind::RadioGap { dongle, ms } => {
-                write!(f, "radio silent for {ms} ms on dongle {dongle}")
+            Kind::TrackingState { from, to } => {
+                write!(f, "went from {} to {}", from.plain(), to.plain())
             }
-            Kind::Parked(true) => write!(f, "parked far outside the play space, ignored"),
+            Kind::RadioGap { dongle, ms } => {
+                write!(f, "no radio packets for {ms} ms on dongle {dongle}")
+            }
+            Kind::Parked(true) => write!(f, "sitting far outside the play space, so it's left out"),
             Kind::Parked(false) => write!(f, "back inside the play space"),
+            Kind::DeviceActivated => write!(f, "connected"),
+            Kind::DeviceDeactivated => write!(f, "disconnected or turned off"),
+            Kind::PoseValid(true) => write!(f, "has a valid position again"),
+            Kind::PoseValid(false) => write!(f, "lost its position"),
+            Kind::StandbyStart => write!(f, "headset went to standby"),
+            Kind::StandbyEnd => write!(f, "headset woke up"),
+            Kind::BaseSight {
+                ch, gained, seeing, ..
+            } => write!(
+                f,
+                "{} the base on channel {ch}, now sees {}",
+                if *gained { "can see" } else { "lost sight of" },
+                plural_bases(seeing.len())
+            ),
+            Kind::RoomCheck { code } => write!(f, "{}", room_check_text(*code)),
+            Kind::UpdateAvailable { waiting: false, .. } => {
+                write!(f, "no longer has a firmware update waiting")
+            }
+            Kind::UpdateAvailable { manual: false, .. } => {
+                write!(f, "has a firmware update waiting in SteamVR")
+            }
+            Kind::UpdateAvailable { manual: true, .. } => {
+                write!(f, "has a firmware update that has to be installed by hand")
+            }
+            Kind::Driver { name, status } => match status {
+                DriverStatus::Loaded(_) => write!(f, "SteamVR loaded the {name} driver"),
+                DriverStatus::Disabled => write!(f, "the {name} driver is turned off in SteamVR"),
+                DriverStatus::Failed(e) => {
+                    write!(f, "SteamVR couldn't load the {name} driver: {e}")
+                }
+            },
             k => write!(f, "{k:?}"),
         }
+    }
+}
+
+fn plural_bases(n: usize) -> String {
+    match n {
+        0 => "no bases".into(),
+        1 => "1 base".into(),
+        n => format!("{n} bases"),
+    }
+}
+
+pub fn room_check_text(code: u32) -> &'static str {
+    match code {
+        1 => "SteamVR's room setup check is fine again",
+        101 => "SteamVR thinks a base station may have moved since room setup",
+        102 => "SteamVR thinks a base station was removed since room setup",
+        103 => "SteamVR says the seated position is no longer valid",
+        201 => "SteamVR says its base stations aren't set up yet",
+        202 => "SteamVR found two base stations it can't tell apart",
+        203 => "SteamVR says the play area is invalid",
+        204 => "SteamVR says the play area boundary is invalid",
+        100..=199 => "SteamVR's room setup check gave a warning",
+        _ => "SteamVR's room setup check gave an error",
     }
 }
 

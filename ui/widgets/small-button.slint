@@ -1,0 +1,28 @@
+import { Theme } from "../theme.slint";
+
+export component SmallButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 28px;
+    border-radius: 6px;
+    background: touch.has-hover && root.enabled ? Theme.gray-700 : Theme.gray-800;
+    label := Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        text: root.text;
+        color: !root.enabled ? Theme.gray-500 : root.active || touch.has-hover ? Theme.cyan-400 : white;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}

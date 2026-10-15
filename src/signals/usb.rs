@@ -167,7 +167,7 @@ pub fn crowding(dongles: &[UsbDongle]) -> Vec<String> {
         .filter(|(n, _)| *n >= CROWDED)
         .map(|(n, where_)| {
             format!(
-                "WARNING: {n} Valve USB devices share {where_}. If their trackers drop together, move some dongles to another USB controller."
+                "{n} Valve USB devices share {where_}. If their trackers drop together, move some dongles to another USB controller."
             )
         })
         .collect();
@@ -289,9 +289,7 @@ mod tests {
         let w = crowding(&three_on_root);
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(
-            w[0].starts_with(
-                "WARNING: 3 Valve USB devices share AMD USB controller (PCI 0801.0003)."
-            ),
+            w[0].starts_with("3 Valve USB devices share AMD USB controller (PCI 0801.0003)."),
             "{w:?}"
         );
         assert!(crowding(&three_on_root[3..]).is_empty());

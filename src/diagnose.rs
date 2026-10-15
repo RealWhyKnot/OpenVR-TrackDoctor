@@ -1,5 +1,6 @@
 use crate::bases::{Relations, SETTLE_MS, Turned, is_big, short_serial};
-use crate::event::{Kind, SignalEvent, Source};
+use crate::event::{DriverStatus, Kind, SignalEvent, Source};
+use crate::sight::Sight;
 use crate::signals::logtail::naive_ms;
 use crate::summary::plural;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -21,23 +22,40 @@ pub enum Rule {
     BaseRestart,
     SyncMismatch,
     BaseSignal,
+    HardBase,
+    RoomCheck,
+    Update,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub rule: Rule,
     pub key: String,
+    pub title: String,
     pub what: String,
-    pub fix: String,
+    pub steps: Vec<String>,
 }
 
 impl Finding {
     pub fn line(&self) -> String {
-        if self.fix.is_empty() {
-            self.what.clone()
+        if self.steps.is_empty() {
+            format!("{}: {}", self.title, self.what)
         } else {
-            format!("{} {}", self.what, self.fix)
+            format!(
+                "{}: {} Try: {}",
+                self.title,
+                self.what,
+                self.steps.join(" ")
+            )
         }
+    }
+
+    pub fn resets_map(&self) -> bool {
+        matches!(
+            self.rule,
+            Rule::StaleMap | Rule::BaseTurned | Rule::BaseRestart
+        ) || (self.rule == Rule::RoomCheck
+            && matches!(self.key.as_str(), "101" | "102" | "201" | "202"))
     }
 }
 
@@ -114,6 +132,11 @@ pub struct Diagnosis {
     channels: BTreeMap<u32, usize>,
     rotor: usize,
     relations: Relations,
+    pub sight: Sight,
+    hard: Option<u32>,
+    room: Option<u32>,
+    updates: BTreeMap<String, bool>,
+    pub drivers: BTreeMap<String, DriverStatus>,
     fired: BTreeSet<(Rule, String)>,
 }
 
@@ -131,11 +154,13 @@ fn burst(times: &[u64], window_ms: u64) -> usize {
 impl Diagnosis {
     pub fn ingest(&mut self, ev: &SignalEvent) -> bool {
         self.relations.ingest(ev);
+        self.sight.ingest(ev);
         if ev.kind == Kind::LogRotated {
             self.run_start = None;
             self.run += 1;
             self.owners.clear();
             self.sync_times.clear();
+            self.drivers.clear();
             return false;
         }
         if ev.source == Source::Log {
@@ -203,9 +228,82 @@ impl Diagnosis {
             Kind::ChannelConflict { ch } => *self.channels.entry(*ch).or_default() += 1,
             Kind::RotorPhase => self.rotor += 1,
             Kind::BaseRelation { .. } => {}
+            Kind::BaseSight { .. } => {
+                let hard = self.sight.hard().map(|h| h.base.ch);
+                if hard == self.hard {
+                    return false;
+                }
+                self.hard = hard;
+            }
+            Kind::RoomCheck { code } => {
+                if self.room == Some(*code) {
+                    return false;
+                }
+                self.room = Some(*code);
+            }
+            Kind::UpdateAvailable { manual, waiting } => {
+                let Some(dev) = &ev.device else {
+                    return false;
+                };
+                if !*waiting {
+                    return self.updates.remove(dev).is_some();
+                }
+                if self.updates.insert(dev.clone(), *manual) == Some(*manual) {
+                    return false;
+                }
+            }
+            Kind::Driver { name, status } => {
+                self.drivers.insert(name.clone(), status.clone());
+                return false;
+            }
             _ => return false,
         }
         true
+    }
+
+    pub fn setup_notes(&self) -> Vec<String> {
+        const MOVERS: [&str; 5] = [
+            "spacecalibrator",
+            "smoothtracking",
+            "gaptrack",
+            "inputemulator",
+            "wkopenvr",
+        ];
+        let mut on: Vec<String> = Vec::new();
+        let mut off: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for (name, status) in &self.drivers {
+            match status {
+                DriverStatus::Loaded(_) => on.push(name.clone()),
+                DriverStatus::Disabled => off.push(name.clone()),
+                DriverStatus::Failed(e) => failed.push(format!("{name} ({e})")),
+            }
+        }
+        let movers: Vec<String> = on
+            .iter()
+            .filter(|n| {
+                let n = n.to_ascii_lowercase();
+                MOVERS.iter().any(|m| n.contains(m))
+            })
+            .cloned()
+            .collect();
+        let mut out = Vec::new();
+        if !movers.is_empty() {
+            out.push(format!(
+                "Add-ons that change where SteamVR puts your devices are on: {}. If positions look offset or jumpy, turn them off in SteamVR's settings (Startup / Shutdown, Manage Add-ons) and compare.",
+                join(&movers)
+            ));
+        }
+        if !on.is_empty() {
+            out.push(format!("SteamVR drivers loaded: {}.", on.join(", ")));
+        }
+        if !off.is_empty() {
+            out.push(format!("Turned off in SteamVR: {}.", off.join(", ")));
+        }
+        if !failed.is_empty() {
+            out.push(format!("SteamVR couldn't load: {}.", failed.join(", ")));
+        }
+        out
     }
 
     pub fn fresh(&mut self, found: Vec<Finding>) -> Vec<Finding> {
@@ -307,6 +405,15 @@ impl Diagnosis {
         if !self.channels.is_empty() || self.rotor > 0 {
             out.push(Rule::BaseSignal);
         }
+        if self.sight.hard().is_some() {
+            out.push(Rule::HardBase);
+        }
+        if self.room.is_some_and(|c| c > 1) {
+            out.push(Rule::RoomCheck);
+        }
+        if !self.updates.is_empty() {
+            out.push(Rule::Update);
+        }
         out
     }
 
@@ -318,12 +425,14 @@ impl Diagnosis {
     }
 
     pub fn explain(&self, rule: Rule, label: &dyn Fn(&str) -> String) -> Vec<Finding> {
-        let finding = |key: &str, what: String, fix: &str| Finding {
+        let finding = |key: &str, title: String, what: String, steps: &[&str]| Finding {
             rule,
             key: key.to_string(),
+            title,
             what,
-            fix: fix.to_string(),
+            steps: steps.iter().map(|s| s.to_string()).collect(),
         };
+        const RESET: &str = "Reset the base station map with the button below. TrackDoctor keeps the old map as a backup and SteamVR builds a new one.";
         match rule {
             Rule::StaleMap => {
                 let moves = self.stale_moves();
@@ -363,8 +472,9 @@ impl Diagnosis {
                 };
                 vec![finding(
                     "",
+                    "SteamVR's base station map is out of date".into(),
                     format!(
-                        "Base map out of date: more than 10 minutes in, SteamVR was still moving {} in its saved map ({}, up to {max} mm{last}).{after}{refused} A base was moved, re-aimed or bumped while SteamVR kept its old position, or one sits loose and keeps shifting.{culprit}",
+                        "More than 10 minutes in, SteamVR was still moving {} in its saved map ({}, up to {max} mm{last}).{after}{refused} A base was moved, re-aimed or bumped while SteamVR kept its old position, or one sits loose and keeps shifting.{culprit}",
                         if bases.len() == 1 {
                             format!("base {}", bases[0])
                         } else {
@@ -372,7 +482,7 @@ impl Diagnosis {
                         },
                         plural(moves.len(), "big move"),
                     ),
-                    "Fix: once every base is in its final place, run trackdoctor resetmap. It keeps the old map as a backup and has SteamVR build a new one.",
+                    &["Make sure every base is in its final place and mounted firmly.", RESET],
                 )]
             }
             Rule::BaseTurned => self
@@ -381,8 +491,9 @@ impl Diagnosis {
                 .map(|t| {
                     finding(
                         &t.base,
+                        format!("Base {} turned on its mount", t.base),
                         format!("{} Its mount is probably sagging, or it got knocked.", t.what()),
-                        "Fix: tighten its mount or move it somewhere solid, then run trackdoctor resetmap.",
+                        &["Tighten its mount or move it somewhere solid.", RESET],
                     )
                 })
                 .collect(),
@@ -415,12 +526,17 @@ impl Diagnosis {
                     };
                     finding(
                         dev,
+                        format!("{} keeps losing its radio link", label(dev)),
                         format!(
                             "{} wasn't answering: {}{span}. SteamVR logs these when packets between the dongle and the device get lost, so its radio link is weak.",
                             label(dev),
                             join(&parts)
                         ),
-                        "Fix: plug its dongle straight into the PC rather than a hub, or put it on a USB extension cable out in the open where you play, then turn the device off and on. If it keeps happening on another dongle, the device itself is failing.",
+                        &[
+                            "Plug its dongle straight into the PC rather than a hub, or put it on a USB extension cable out in the open where you play.",
+                            "Turn the device off and on again.",
+                            "If it keeps happening on another dongle, the device itself is failing.",
+                        ],
                     )
                 })
                 .collect(),
@@ -440,16 +556,18 @@ impl Diagnosis {
                     match &t.rebound {
                         Some((d, s)) => finding(
                             &key,
+                            format!("{from} switched dongles"),
                             format!(
                                 "{what} It got dongle {d}{}.",
                                 s.clock().map_or_else(|| " later".to_string(), |c| format!(" at {c}"))
                             ),
-                            "",
+                            &[],
                         ),
                         None => finding(
                             &key,
+                            format!("{from} lost its dongle to another device"),
                             what,
-                            &format!("Fix: pair {from} again, with only that device in pairing mode."),
+                            &[&format!("Pair {from} again, with only that device in pairing mode.")],
                         ),
                     }
                 })
@@ -472,8 +590,12 @@ impl Diagnosis {
                     };
                     finding(
                         base,
+                        format!("Base {base} restarted"),
                         format!("{what} SteamVR logs this when a base loses power or gets bumped."),
-                        "Fix: check its power plug and adapter and that nothing knocks it. If it moved, run trackdoctor resetmap.",
+                        &[
+                            "Check its power plug and adapter, and that nothing knocks it.",
+                            "If it moved, reset the base station map with the button below.",
+                        ],
                     )
                 })
                 .collect(),
@@ -498,22 +620,26 @@ impl Diagnosis {
                         join(&many.iter().map(|r| r.0.clone()).collect::<Vec<_>>())
                     ),
                 };
-                let fix = if self.active().contains(&Rule::StaleMap) {
-                    "Fix: reset the base map first; these bursts came with it. If they keep coming after that, look for mirrors, windows or glossy surfaces the bases can see."
+                let steps: &[&str] = if self.active().contains(&Rule::StaleMap) {
+                    &[
+                        "Reset the base map first. These bursts came with it.",
+                        "If they keep coming after that, look for mirrors, windows or glossy surfaces the bases can see.",
+                    ]
                 } else if relock * 2 >= total {
-                    "Fix: keep the restarting base powered steadily. Check its plug and adapter, and that nothing knocks it."
+                    &["Keep the restarting base powered steadily. Check its plug and adapter, and that nothing knocks it."]
                 } else {
-                    "Fix: look for mirrors, windows or glossy surfaces the bases can see and cover them one at a time."
+                    &["Look for mirrors, windows or glossy surfaces the bases can see and cover them one at a time."]
                 };
                 vec![finding(
                     "",
+                    "Base station light arrived at the wrong time".into(),
                     format!(
                         "SteamVR couldn't match a light sync to the base it expected {} ({}), up to {} within 10 minutes. It logs this when a base's sync arrives more than 1 ms earlier or later than its last frame predicted.{after}",
                         plural(total, "time"),
                         list.join(", "),
                         self.sync_peak
                     ),
-                    fix,
+                    steps,
                 )]
             }
             Rule::BaseSignal => {
@@ -523,31 +649,152 @@ impl Diagnosis {
                     .map(|(ch, n)| {
                         finding(
                             &format!("ch{ch}"),
+                            format!("Two base stations share channel {ch}"),
                             format!(
                                 "Two base stations were sending on channel {ch} ({}).",
                                 plural(*n, "time")
                             ),
-                            "Fix: give each base station its own channel.",
+                            &["Give each base station its own channel."],
                         )
                     })
                     .collect();
                 if self.rotor > 0 {
                     out.push(finding(
                         "rotor",
+                        "A 1.0 base station lost its sync".into(),
                         format!(
                             "A 1.0 base station's rotors fell out of phase lock {}.",
                             plural(self.rotor, "time")
                         ),
-                        "Fix: make sure the bases can see each other, or connect the sync cable.",
+                        &["Make sure the bases can see each other, or connect the sync cable."],
                     ));
                 }
                 out
+            }
+            Rule::HardBase => {
+                let Some(h) = self.sight.hard() else {
+                    return Vec::new();
+                };
+                let name = crate::sight::base_name(h.base.ch, h.base.id.as_ref());
+                let others: Vec<f32> = self
+                    .sight
+                    .bases()
+                    .iter()
+                    .filter(|b| b.ch != h.base.ch)
+                    .map(|b| b.share)
+                    .collect();
+                let view = if others.is_empty() || h.base.share <= 0.0 {
+                    String::new()
+                } else {
+                    format!(
+                        " Your devices had it in view {:.0}% of the time, against {:.0}% for the other bases on average.",
+                        h.base.share * 100.0,
+                        others.iter().sum::<f32>() / others.len() as f32 * 100.0
+                    )
+                };
+                let mut steps = Vec::new();
+                if let Some(id) = &h.base.id {
+                    steps.push(format!(
+                        "Find it on the Room page, where it's listed as LHB-{id}, to see which base it is."
+                    ));
+                }
+                steps.extend([
+                    "Check that nothing blocks its view of where you play, like a fan, shelf, screen, curtain or furniture.".to_string(),
+                    "Aim it at the middle of the play space, tilted down a little.".to_string(),
+                    "Mount it above head height, so your body blocks it less when you turn.".to_string(),
+                ]);
+                if let Some((dev, n)) = h.base.worst.first()
+                    && *n * 2 >= h.base.drops
+                {
+                    steps.push(format!(
+                        "{} lost it {n} of those times. If it's worn on your back or hip, it may face away from this base most of the time.",
+                        label(dev)
+                    ));
+                }
+                vec![Finding {
+                    rule,
+                    key: h.base.ch.to_string(),
+                    title: format!("Your devices lose sight of base {name} the most"),
+                    what: format!(
+                        "Your trackers and controllers lost sight of base {name} {} times. {}{}{view}",
+                        h.base.drops,
+                        if h.others <= 1 {
+                            "Your other bases were hardly ever lost.".to_string()
+                        } else {
+                            format!(
+                                "Your other bases were typically lost about {} times each, so this one was lost about {:.1} times as often.",
+                                h.others, h.ratio
+                            )
+                        },
+                        if h.of == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                " It was the base lost most often for {} of {} devices.",
+                                h.devices, h.of
+                            )
+                        }
+                    ),
+                    steps,
+                }]
+            }
+            Rule::RoomCheck => {
+                let Some(code) = self.room.filter(|c| *c > 1) else {
+                    return Vec::new();
+                };
+                let steps: &[&str] = match code {
+                    101 | 102 | 201 | 202 => &[
+                        "If you moved a base on purpose, reset the base station map with the button below, or run Room Setup again.",
+                        "If you didn't, check that every base is mounted firmly and has power.",
+                    ],
+                    _ => &["Run Room Setup again in SteamVR."],
+                };
+                vec![finding(
+                    &code.to_string(),
+                    "SteamVR's room setup needs attention".into(),
+                    format!("{}.", crate::event::room_check_text(code)),
+                    steps,
+                )]
+            }
+            Rule::Update => {
+                if self.updates.is_empty() {
+                    return Vec::new();
+                }
+                let names: Vec<String> = self.updates.keys().map(|d| label(d)).collect();
+                let manual = self.updates.values().any(|m| *m);
+                let one = names.len() == 1;
+                let steps: &[&str] = match (manual, one) {
+                    (false, true) => &["Plug it into the PC with a USB cable, and SteamVR offers the update."],
+                    (false, false) => &["Plug each one into the PC with a USB cable, and SteamVR offers the update."],
+                    (true, true) => &[
+                        "Plug it into the PC with a USB cable.",
+                        "SteamVR says this update has to be installed by hand, so follow the instructions it shows for the device.",
+                    ],
+                    (true, false) => &[
+                        "Plug each one into the PC with a USB cable.",
+                        "SteamVR says at least one of them has to be updated by hand, so follow the instructions it shows for that device.",
+                    ],
+                };
+                vec![finding(
+                    "updates",
+                    if names.len() == 1 {
+                        "A firmware update is waiting".into()
+                    } else {
+                        "Firmware updates are waiting".into()
+                    },
+                    format!(
+                        "SteamVR says {} {} a firmware update waiting.",
+                        join(&names),
+                        if names.len() == 1 { "has" } else { "have" }
+                    ),
+                    steps,
+                )]
             }
         }
     }
 }
 
-fn join(parts: &[String]) -> String {
+pub fn join(parts: &[String]) -> String {
     match parts {
         [] => String::new(),
         [one] => one.clone(),
@@ -859,7 +1106,10 @@ mod tests {
             f.what
                 .contains("LHR-FD4FF7E2 connected through dongle 0C58EE58E6")
         );
-        assert!(f.fix.contains("pair LHR-7E902102 again"));
+        assert_eq!(
+            f.steps,
+            vec!["Pair LHR-7E902102 again, with only that device in pairing mode."]
+        );
         feed(&mut d, &bind(T0 + 4, "LHR-7E902102", "DDF8F5F1F6"));
         let f = &d.findings(&label);
         assert_eq!(
@@ -872,7 +1122,7 @@ mod tests {
             "{}",
             f[0].what
         );
-        assert!(f[0].fix.is_empty());
+        assert!(f[0].steps.is_empty());
     }
 
     #[test]
@@ -902,7 +1152,7 @@ mod tests {
             "{}",
             f.what
         );
-        assert!(f.fix.starts_with("Fix: look for mirrors"));
+        assert!(f.steps[0].starts_with("Look for mirrors"));
     }
 
     #[test]
@@ -939,7 +1189,7 @@ mod tests {
             "{}",
             f.what
         );
-        assert!(f.fix.starts_with("Fix: keep the restarting base powered"));
+        assert!(f.steps[0].starts_with("Keep the restarting base powered"));
     }
 
     #[test]
@@ -986,6 +1236,158 @@ mod tests {
             d.findings(&label)[0]
                 .what
                 .starts_with("Base 9417E0B3 restarted at 00:26.")
+        );
+    }
+
+    fn sight(t: u64, dev: &str, ch: u32, gained: bool) -> SignalEvent {
+        let all = [1, 10, 15];
+        ev(
+            t,
+            Some(dev),
+            Kind::BaseSight {
+                ch,
+                gained,
+                seeing: all.into_iter().filter(|c| gained || *c != ch).collect(),
+                ids: vec![
+                    (1, "9417E0B3".into()),
+                    (10, "9D8DEA7B".into()),
+                    (15, "B394A63C".into()),
+                ],
+            },
+        )
+    }
+
+    #[test]
+    fn a_base_lost_far_more_often_becomes_one_finding_with_steps() {
+        let mut d = Diagnosis::default();
+        let devs = ["LHR-7E902102", "LHR-905BD201", "LHR-617D30D7"];
+        for dev in devs {
+            for ch in [1, 10, 15] {
+                feed(&mut d, &sight(T0, dev, ch, true));
+            }
+        }
+        let mut fired = Vec::new();
+        for i in 0..24u64 {
+            let ch = match i % 8 {
+                0 | 4 => 1,
+                6 => 15,
+                _ => 10,
+            };
+            for dev in devs {
+                let t = T0 + 1_000 + i * 2_000;
+                fired.extend(feed(&mut d, &sight(t, dev, ch, false)));
+                fired.extend(feed(&mut d, &sight(t + 500, dev, ch, true)));
+            }
+        }
+        assert_eq!(fired, vec![Rule::HardBase]);
+        let f = d
+            .findings(&label)
+            .into_iter()
+            .find(|f| f.rule == Rule::HardBase)
+            .unwrap();
+        assert!(f.title.contains("9D8DEA7B"), "{}", f.title);
+        assert!(f.what.contains("45 times"), "{}", f.what);
+        assert!(f.steps.len() >= 3);
+    }
+
+    #[test]
+    fn room_setup_and_waiting_firmware_show_up_until_cleared() {
+        let mut d = Diagnosis::default();
+        assert!(feed(&mut d, &ev(T0, None, Kind::RoomCheck { code: 1 })).is_empty());
+        assert_eq!(
+            feed(&mut d, &ev(T0 + 1, None, Kind::RoomCheck { code: 101 })),
+            vec![Rule::RoomCheck]
+        );
+        let room = d
+            .findings(&label)
+            .into_iter()
+            .find(|f| f.rule == Rule::RoomCheck)
+            .unwrap();
+        assert!(room.resets_map());
+        feed(&mut d, &ev(T0 + 2, None, Kind::RoomCheck { code: 1 }));
+        assert!(rules(&d).iter().all(|r| *r != Rule::RoomCheck));
+        assert_eq!(
+            feed(
+                &mut d,
+                &ev(
+                    T0 + 3,
+                    Some("LHR-905BD201"),
+                    Kind::UpdateAvailable {
+                        manual: false,
+                        waiting: true
+                    }
+                )
+            ),
+            vec![Rule::Update]
+        );
+        assert!(
+            feed(
+                &mut d,
+                &ev(
+                    T0 + 4,
+                    Some("LHR-617D30D7"),
+                    Kind::UpdateAvailable {
+                        manual: false,
+                        waiting: true
+                    }
+                )
+            )
+            .is_empty(),
+            "a second device joins the same notice"
+        );
+        let f = d
+            .findings(&label)
+            .into_iter()
+            .find(|f| f.rule == Rule::Update)
+            .unwrap();
+        assert_eq!(f.title, "Firmware updates are waiting");
+        for (t, dev) in [(T0 + 5, "LHR-905BD201"), (T0 + 6, "LHR-617D30D7")] {
+            feed(
+                &mut d,
+                &ev(
+                    t,
+                    Some(dev),
+                    Kind::UpdateAvailable {
+                        manual: false,
+                        waiting: false,
+                    },
+                ),
+            );
+        }
+        assert!(!rules(&d).contains(&Rule::Update));
+    }
+
+    #[test]
+    fn add_ons_that_move_devices_are_named_in_the_setup_notes() {
+        let mut d = Diagnosis::default();
+        for (name, status) in [
+            (
+                "01spacecalibrator",
+                DriverStatus::Loaded("D:\\calib".into()),
+            ),
+            ("lighthouse", DriverStatus::Loaded("C:\\lh".into())),
+            ("SmoothTracking", DriverStatus::Disabled),
+            (
+                "VirtualDesktop",
+                DriverStatus::Failed("VRInitError_Init_HmdNotFound(108)".into()),
+            ),
+        ] {
+            d.ingest(&ev(
+                T0,
+                None,
+                Kind::Driver {
+                    name: name.into(),
+                    status,
+                },
+            ));
+        }
+        let notes = d.setup_notes();
+        assert!(notes[0].contains("01spacecalibrator"), "{notes:?}");
+        assert!(!notes[0].contains("SmoothTracking"));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("couldn't load: VirtualDesktop"))
         );
     }
 }

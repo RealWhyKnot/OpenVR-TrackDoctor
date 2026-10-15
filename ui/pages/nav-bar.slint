@@ -1,0 +1,15 @@
+import { Navigation } from "../state.slint";
+import { NavItem } from "../widgets/nav-item.slint";
+
+export component NavBar inherits HorizontalLayout {
+    height: 26px;
+    spacing: 18px;
+    alignment: start;
+    for name[i] in ["Live", "Summary", "USB", "Room", "Bases", "History", "Settings"]: NavItem {
+        text: name;
+        active: Navigation.page == i;
+        clicked => {
+            Navigation.page = i;
+        }
+    }
+}

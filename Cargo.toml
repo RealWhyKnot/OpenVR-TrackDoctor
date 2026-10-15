@@ -7,12 +7,29 @@ description = "Finds out why a SteamVR lighthouse device drifted. Watches poses,
 
 [dependencies]
 anyhow = "1.0.104"
-crossterm = "0.29.0"
+flate2 = "1.1.10"
 futures-core = "0.3.34"
 nusb = "0.2.7"
 openvr = "0.9.0"
 openvr_sys = "2.1.4"
-ratatui = "0.30.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "unstable-winit-030"] }
+tiny-skia = "0.12"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"
+png = "0.18.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

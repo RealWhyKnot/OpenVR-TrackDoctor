@@ -1,4 +1,4 @@
-use crate::event::{Kind, SignalEvent, Source, now_ms};
+use crate::event::{DriverStatus, Kind, SignalEvent, Source, now_ms};
 use regex::Regex;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -38,6 +38,12 @@ struct Patterns {
     rotor_phase: Regex,
     relationship: Regex,
     startup: Regex,
+    sight: Regex,
+    sight_id: Regex,
+    sight_list: Regex,
+    driver_loaded: Regex,
+    driver_off: Regex,
+    driver_failed: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -94,6 +100,12 @@ fn patterns() -> &'static Patterns {
         )
         .unwrap(),
         startup: Regex::new(r"^vrserver \S+ startup with PID=").unwrap(),
+        sight: Regex::new(r"SOB: (add|drop) S-(\d+)((?: \([^)]*\))*)(?: (?:also )?seeing(.*))?").unwrap(),
+        sight_id: Regex::new(r"\(([0-9A-Fa-f]{8})\)").unwrap(),
+        sight_list: Regex::new(r"S-(\d+)(?: \(([0-9A-Fa-f]{8})\))?").unwrap(),
+        driver_loaded: Regex::new(r"Loaded server driver (\S+) \([^)]*\) from (.+?)\s*$").unwrap(),
+        driver_off: Regex::new(r"Not loading driver (\S+) because it is disabled in settings").unwrap(),
+        driver_failed: Regex::new(r"Unable to load driver (\S+) because of error (\S+?)\.? Skipping").unwrap(),
     })
 }
 
@@ -142,7 +154,52 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
         None => (read_ms, line),
     };
     let device = p.device.captures(msg).map(|c| c[1].to_string());
-    let kind = if let Some(c) = p.calibration_failed.captures(msg) {
+    let kind = if let Some(c) = p.sight.captures(msg) {
+        let ch: u32 = c[2].parse().unwrap_or(0);
+        let gained = &c[1] == "add";
+        let mut ids: Vec<(u32, String)> = p
+            .sight_id
+            .captures_iter(&c[3])
+            .map(|i| (ch, i[1].to_ascii_uppercase()))
+            .collect();
+        let mut seeing: Vec<u32> = Vec::new();
+        for s in p
+            .sight_list
+            .captures_iter(c.get(4).map_or("", |m| m.as_str()))
+        {
+            let other: u32 = s[1].parse().unwrap_or(0);
+            seeing.push(other);
+            if let Some(id) = s.get(2) {
+                ids.push((other, id.as_str().to_ascii_uppercase()));
+            }
+        }
+        if gained {
+            seeing.push(ch);
+        }
+        seeing.sort_unstable();
+        seeing.dedup();
+        Kind::BaseSight {
+            ch,
+            gained,
+            seeing,
+            ids,
+        }
+    } else if let Some(c) = p.driver_loaded.captures(msg) {
+        Kind::Driver {
+            name: c[1].to_string(),
+            status: DriverStatus::Loaded(c[2].to_string()),
+        }
+    } else if let Some(c) = p.driver_off.captures(msg) {
+        Kind::Driver {
+            name: c[1].to_string(),
+            status: DriverStatus::Disabled,
+        }
+    } else if let Some(c) = p.driver_failed.captures(msg) {
+        Kind::Driver {
+            name: c[1].to_string(),
+            status: DriverStatus::Failed(c[2].to_string()),
+        }
+    } else if let Some(c) = p.calibration_failed.captures(msg) {
         Kind::CalibrationFailed {
             base: c[1].to_string(),
             outage_ms: c[2].parse().unwrap_or(0),
@@ -300,6 +357,7 @@ pub struct LogTail {
     path: PathBuf,
     pos: u64,
     partial: String,
+    pub raw: Option<Vec<String>>,
 }
 
 impl LogTail {
@@ -309,6 +367,7 @@ impl LogTail {
             path,
             pos,
             partial: String::new(),
+            raw: None,
         }
     }
 
@@ -345,6 +404,9 @@ impl LogTail {
         let read_ms = now_ms();
         while let Some(nl) = self.partial.find('\n') {
             let line: String = self.partial.drain(..=nl).collect();
+            if let Some(raw) = self.raw.as_mut() {
+                raw.push(line.trim_end().to_string());
+            }
             if let Some(ev) = parse_line(line.trim_end(), read_ms) {
                 if rotated && ev.kind == Kind::LogRotated {
                     rotated = false;
@@ -668,6 +730,100 @@ mod tests {
                 b: "B394A63C".into(),
                 mm: 2400,
                 deg: 58.31,
+            }
+        );
+    }
+
+    #[test]
+    fn steamvr_driver_load_lines() {
+        assert_eq!(
+            kind("Thu Oct 15 2026 08:30:53.807 [Info] - Loaded server driver 01spacecalibrator (IServerTrackedDeviceProvider_004) from D:\\Github\\OpenVR\\OpenVR-SpaceCalibrator\\build\\01spacecalibrator\\bin\\win64\\driver_01spacecalibrator.dll"),
+            Kind::Driver {
+                name: "01spacecalibrator".into(),
+                status: DriverStatus::Loaded(
+                    "D:\\Github\\OpenVR\\OpenVR-SpaceCalibrator\\build\\01spacecalibrator\\bin\\win64\\driver_01spacecalibrator.dll".into()
+                ),
+            }
+        );
+        assert_eq!(
+            kind(
+                "Thu Oct 15 2026 08:30:53.853 [Warning] - Not loading driver SmoothTracking because it is disabled in settings"
+            ),
+            Kind::Driver {
+                name: "SmoothTracking".into(),
+                status: DriverStatus::Disabled,
+            }
+        );
+        assert_eq!(
+            kind(
+                "Thu Oct 15 2026 08:30:53.761 [Error] - Unable to load driver VirtualDesktop because of error VRInitError_Init_HmdNotFound(108). Skipping."
+            ),
+            Kind::Driver {
+                name: "VirtualDesktop".into(),
+                status: DriverStatus::Failed("VRInitError_Init_HmdNotFound(108)".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn steamvr_2_16_base_sight_lines() {
+        let e = parse(
+            "Thu Oct 15 2026 05:04:18.633 [Info] - lighthouse: LHR-FD4FF7E2 C: SOB: add S-1 also seeing S-10 S-15 (B394A63C) S-16 (C538EFC9)",
+        );
+        assert_eq!(e.device.as_deref(), Some("LHR-FD4FF7E2"));
+        assert_eq!(
+            e.kind,
+            Kind::BaseSight {
+                ch: 1,
+                gained: true,
+                seeing: vec![1, 10, 15, 16],
+                ids: vec![(15, "B394A63C".into()), (16, "C538EFC9".into())],
+            }
+        );
+        assert_eq!(
+            kind(
+                "Thu Oct 15 2026 05:04:50.827 [Info] - lighthouse: LHR-7E902102 C: SOB: drop S-10 (9D8DEA7B) seeing S-15 (B394A63C) S-16 (C538EFC9)"
+            ),
+            Kind::BaseSight {
+                ch: 10,
+                gained: false,
+                seeing: vec![15, 16],
+                ids: vec![
+                    (10, "9D8DEA7B".into()),
+                    (15, "B394A63C".into()),
+                    (16, "C538EFC9".into())
+                ],
+            }
+        );
+        assert_eq!(
+            kind(
+                "Thu Oct 15 2026 05:03:52.115 [Info] - lighthouse: LHR-7E902102 C: SOB: add S-15 (generation changed) also seeing S-1"
+            ),
+            Kind::BaseSight {
+                ch: 15,
+                gained: true,
+                seeing: vec![1, 15],
+                ids: vec![],
+            }
+        );
+        assert_eq!(
+            kind("Thu Oct 15 2026 05:03:51.642 [Info] - lighthouse: LHR-A66FAA1B C: SOB: add S-1"),
+            Kind::BaseSight {
+                ch: 1,
+                gained: true,
+                seeing: vec![1],
+                ids: vec![],
+            }
+        );
+        assert_eq!(
+            kind(
+                "Thu Oct 15 2026 05:04:04.247 [Info] - lighthouse: LHR-FD4FF7E2 C: SOB: drop S-1 seeing S-15 S-16 (C538EFC9)"
+            ),
+            Kind::BaseSight {
+                ch: 1,
+                gained: false,
+                seeing: vec![15, 16],
+                ids: vec![(16, "C538EFC9".into())],
             }
         );
     }

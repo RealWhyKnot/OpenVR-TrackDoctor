@@ -1,0 +1,31 @@
+import { Theme } from "../theme.slint";
+
+export component Link inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    width: label.preferred-width;
+    height: 20px;
+    label := Text {
+        x: 0;
+        height: parent.height;
+        vertical-alignment: center;
+        font-size: 14px;
+        color: Theme.sky-200;
+        text: root.text;
+    }
+    Rectangle {
+        x: 0;
+        y: 16px;
+        width: label.width;
+        height: 1px;
+        background: Theme.sky-200;
+    }
+    TouchArea {
+        x: 0;
+        width: label.width;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}

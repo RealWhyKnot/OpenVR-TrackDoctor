@@ -51,6 +51,7 @@ pub struct Summary {
     pub base_faults: Vec<String>,
     pub base_warnings: Vec<String>,
     pub diagnosis: Vec<crate::diagnose::Finding>,
+    pub setup: Vec<String>,
 }
 
 impl Summary {
@@ -127,37 +128,72 @@ pub fn confidence_word(c: Confidence) -> &'static str {
 
 const FLICKER: &str = "brief flicker";
 
-fn tip(c: Option<&Cause>) -> &'static str {
+fn advice(c: Option<&Cause>) -> (&'static str, &'static str, &'static [&'static str]) {
     match c {
-        Some(Cause::UsbReset | Cause::UsbBandwidthSuspect | Cause::DriverStall) => {
-            "its USB dongle reset or stalled. Move the dongle to another USB controller (see the USB view), avoid unpowered hubs, and turn off USB selective suspend in Windows power options."
-        }
-        Some(Cause::RfDropout) => {
-            "the wireless link dropped while USB stayed up. Put the dongle on a USB extension cable with a clear view of the play space, away from the PC case and other dongles."
-        }
+        Some(Cause::UsbReset | Cause::UsbBandwidthSuspect | Cause::DriverStall) => (
+            "USB dongle resetting",
+            "dropped out because its USB dongle reset or stalled.",
+            &[
+                "Move the dongle to a different USB controller. The USB page shows which ports share one.",
+                "Don't use an unpowered hub for dongles.",
+                "Turn off USB selective suspend in Windows power options.",
+            ],
+        ),
+        Some(Cause::RfDropout) => (
+            "Wireless link dropping",
+            "lost its wireless link while its USB dongle stayed connected.",
+            &[
+                "Put the dongle on a USB extension cable with a clear view of where you play.",
+                "Keep it away from the PC case and from other dongles.",
+            ],
+        ),
         Some(
             Cause::OcclusionOneBase(_)
             | Cause::OcclusionBothBases
             | Cause::ImuDriftDuringDropout
             | Cause::NeverAcquiredBase,
-        ) => {
-            "the base stations could not see it. Check what blocks their view of where it is worn; mounting a base higher or adding one on the blind side helps."
-        }
-        Some(Cause::ReflectionJump) => {
-            "it jumped while everything reported healthy, which often means a reflection. Cover mirrors, windows and glossy surfaces the bases can see."
-        }
-        Some(Cause::BaseStandbyOrPowerdown(_) | Cause::BaseHardwareFault(_)) => {
-            "a base station slept, lost power or faulted. Check its power cable and SteamVR's base station power management setting."
-        }
-        Some(Cause::PlayspaceShift) => {
-            "the whole playspace moved, usually the headset relocalizing. This is not a fault of the device."
-        }
-        Some(Cause::Unknown) => {
-            "short dropouts with no clear signal. Check whether they happen in one spot or pose; the Room view shows where it was."
-        }
-        None => {
-            "tracking flickered in and out while the pose stayed valid. Compare with your other devices: one far above the rest usually sits where the bases barely see it."
-        }
+        ) => (
+            "Base stations couldn't see it",
+            "lost tracking because the base stations couldn't see it.",
+            &[
+                "Check what blocks the bases' view of where it's worn.",
+                "Mount a base higher, or add one on the side that goes blind.",
+            ],
+        ),
+        Some(Cause::ReflectionJump) => (
+            "Jumps that look like reflections",
+            "jumped while everything reported healthy, which usually means a reflection.",
+            &[
+                "Cover mirrors, windows and glossy surfaces the bases can see, one at a time, to find the one causing it.",
+            ],
+        ),
+        Some(Cause::BaseStandbyOrPowerdown(_) | Cause::BaseHardwareFault(_)) => (
+            "A base station slept or lost power",
+            "lost tracking when a base station went to sleep, lost power or faulted.",
+            &[
+                "Check the base's power cable and adapter.",
+                "Check SteamVR's base station power management setting.",
+            ],
+        ),
+        Some(Cause::PlayspaceShift) => (
+            "Play space moved",
+            "moved along with the whole play space, usually because the headset re-centred itself. The device itself is fine.",
+            &[],
+        ),
+        Some(Cause::Unknown) => (
+            "Short dropouts with no clear cause",
+            "had short dropouts TrackDoctor couldn't pin down.",
+            &[
+                "Check whether they happen in one spot or pose. The Room page shows where each one happened.",
+            ],
+        ),
+        None => (
+            "Tracking flickering",
+            "flickered in and out of tracking while its position stayed valid.",
+            &[
+                "Compare it with your other devices in the table below. One far above the rest usually sits where the bases barely see it.",
+            ],
+        ),
     }
 }
 
@@ -306,7 +342,7 @@ pub fn table_lines(s: &Summary) -> Vec<String> {
     let max = s.rows.iter().map(|r| r.lost_ms).max().unwrap_or(0);
     let mut out = vec![format!(
         " #  {:<31} {:<18} {:>9} {:>8}  {}",
-        "device", "not tracking", "incidents", "flaps/h", "main problem"
+        "device", "not tracking", "incidents", "flickers/h", "main problem"
     )];
     for (i, r) in s.rows.iter().enumerate() {
         let rank = if r.trouble() {
@@ -335,20 +371,20 @@ pub fn notes(s: &Summary) -> Vec<String> {
     let mut out = Vec::new();
     if !s.parked.is_empty() {
         out.push(format!(
-            "Ignored: {} (parked far outside the play space, e.g. a SpaceCalibrator reference).",
+            "Left out: {}. It sat far outside the play space, like a tracker Space Calibrator uses as a reference.",
             s.parked.join(", ")
         ));
     }
     if s.standby > 0 {
         out.push(format!(
-            "{} outage(s) happened while the headset was in standby or devices were powering off; not counted.",
-            s.standby
+            "{} while the headset was in standby or devices were turning off. Those aren't counted.",
+            if s.standby == 1 { "1 dropout happened".to_string() } else { format!("{} dropouts happened", s.standby) }
         ));
     }
     if s.shifts > 0 {
         out.push(format!(
-            "{} playspace shift(s): everything moved together, usually the headset relocalizing; not counted.",
-            s.shifts
+            "{} the whole play space moved together, usually because the headset re-centred itself. Those aren't counted.",
+            if s.shifts == 1 { "Once".to_string() } else { format!("{} times", s.shifts) }
         ));
     }
     if !s.base_faults.is_empty() {
@@ -358,40 +394,104 @@ pub fn notes(s: &Summary) -> Vec<String> {
         ));
     }
     out.extend(s.base_warnings.iter().cloned());
+    out.extend(s.setup.iter().cloned());
     out
 }
 
-pub fn tips(s: &Summary) -> Vec<String> {
-    let mut groups: Vec<(&'static str, Vec<&str>)> = Vec::new();
-    for r in s.rows.iter().filter(|r| r.trouble()) {
-        let t = tip(r.main_cause.as_ref());
-        match groups.iter_mut().find(|(g, _)| *g == t) {
-            Some((_, devs)) => devs.push(&r.serial),
-            None => groups.push((t, vec![&r.serial])),
-        }
-    }
-    groups
-        .into_iter()
-        .map(|(t, devs)| format!("{}: {t}", devs.join(", ")))
-        .collect()
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    pub title: String,
+    pub what: String,
+    pub steps: Vec<String>,
+    pub level: Level,
+    pub reset: bool,
 }
 
-pub fn diagnosis_lines(s: &Summary) -> Vec<(String, String)> {
-    s.diagnosis
+fn device_name(r: &Row) -> String {
+    if r.label.is_empty() {
+        r.serial.clone()
+    } else {
+        format!("{} ({})", r.label, r.serial)
+    }
+}
+
+pub fn cards(s: &Summary) -> Vec<Card> {
+    let mut out: Vec<Card> = s
+        .diagnosis
         .iter()
-        .map(|f| (f.what.clone(), f.fix.clone()))
-        .collect()
+        .map(|f| Card {
+            title: f.title.clone(),
+            what: f.what.clone(),
+            steps: f.steps.clone(),
+            level: Level::Bad,
+            reset: f.resets_map(),
+        })
+        .collect();
+    let mut groups: Vec<(Option<&Cause>, Vec<String>)> = Vec::new();
+    for r in s.rows.iter().filter(|r| r.trouble()) {
+        let title = advice(r.main_cause.as_ref()).0;
+        match groups.iter_mut().find(|(c, _)| advice(*c).0 == title) {
+            Some((_, devs)) => devs.push(device_name(r)),
+            None => groups.push((r.main_cause.as_ref(), vec![device_name(r)])),
+        }
+    }
+    for (cause, devs) in groups {
+        let (title, what, steps) = advice(cause);
+        let mut steps: Vec<String> = steps.iter().map(|s| s.to_string()).collect();
+        if devs.len() > 1 {
+            for s in &mut steps {
+                *s = s
+                    .replace("where it's worn", "where they're worn")
+                    .replace("Compare it with", "Compare them with");
+            }
+        }
+        let what = if devs.len() == 1 {
+            format!("{} {what}", devs[0])
+        } else {
+            format!(
+                "{} each {}",
+                crate::diagnose::join(&devs),
+                what.replace("its ", "their ")
+                    .replace(" it.", " them.")
+                    .replace(" it's ", " they're ")
+                    .replace("The device itself is", "The devices themselves are")
+            )
+        };
+        let mut chars = what.chars();
+        let what = chars
+            .next()
+            .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect());
+        let level = if steps.is_empty() {
+            Level::Dim
+        } else {
+            Level::Warn
+        };
+        out.push(Card {
+            title: title.to_string(),
+            what,
+            steps,
+            level,
+            reset: false,
+        });
+    }
+    if out.is_empty() && !s.rows.is_empty() {
+        out.push(Card {
+            title: "No problems found".into(),
+            what: "Every tracker and controller kept tracking without dropouts.".into(),
+            steps: Vec::new(),
+            level: Level::Good,
+            reset: false,
+        });
+    }
+    out
 }
 
 pub fn render(s: &Summary) -> String {
     let mut out = String::new();
-    if !s.diagnosis.is_empty() {
-        out.push_str("What went wrong:\n");
-        for (what, fix) in diagnosis_lines(s) {
-            out.push_str(&format!("  {what}\n"));
-            if !fix.is_empty() {
-                out.push_str(&format!("    {fix}\n"));
-            }
+    for c in cards(s) {
+        out.push_str(&format!("{}\n  {}\n", c.title, c.what));
+        for (i, step) in c.steps.iter().enumerate() {
+            out.push_str(&format!("  {}. {step}\n", i + 1));
         }
         out.push('\n');
     }
@@ -409,13 +509,6 @@ pub fn render(s: &Summary) -> String {
     for l in notes(s) {
         out.push_str(&l);
         out.push('\n');
-    }
-    let tips = tips(s);
-    if !tips.is_empty() {
-        out.push_str("\nWhat to try:\n");
-        for t in tips {
-            out.push_str(&format!("  {t}\n"));
-        }
     }
     out
 }
@@ -471,7 +564,7 @@ impl TreeCtx<'_> {
                     text.push_str("  parked");
                 } else if let (Some(r), Some(k)) = (row, rank) {
                     text.push_str(&format!(
-                        "  #{k}  {} not tracking, {}, {:.0} flaps/h",
+                        "  #{k}  {} not tracking, {}, {:.0} flickers/h",
                         fmt_dur(r.lost_ms),
                         plural(r.incidents, "incident"),
                         r.flaps_per_h
@@ -611,6 +704,7 @@ mod tests {
             tags,
             evidence: vec![],
             alternates: vec![],
+            pos: None,
         }
     }
 
@@ -720,7 +814,7 @@ mod tests {
     #[test]
     fn render_shows_table_notes_and_grouped_tips() {
         let text = render(&sample());
-        assert!(text.starts_with("Session length 1h 00m."), "{text}");
+        assert!(text.contains("\nSession length 1h 00m."), "{text}");
         assert!(
             text.contains(" 1  LHR-A left controller           ######## "),
             "{text}"
@@ -728,12 +822,16 @@ mod tests {
         assert!(text.contains("41.7s"), "{text}");
         assert!(text.contains("    LHR-C tracker"), "{text}");
         assert!(text.contains("clean"), "{text}");
-        assert!(text.contains("Ignored: LHR-P"), "{text}");
+        assert!(text.contains("Left out: LHR-P"), "{text}");
         assert!(
-            text.contains("LHR-A: the base stations could not see it"),
+            text.contains("Base stations couldn't see it\n  Left controller (LHR-A) lost tracking"),
             "{text}"
         );
-        assert!(text.contains("LHR-B: it jumped"), "{text}");
+        assert!(
+            text.contains("Jumps that look like reflections\n"),
+            "{text}"
+        );
+        assert!(text.contains("(LHR-B) jumped while"), "{text}");
     }
 
     #[test]
@@ -748,7 +846,7 @@ mod tests {
         assert_eq!(s.rows[0].serial, "LHR-B");
         assert_eq!(s.rows[0].main, FLICKER);
         assert!((s.rows[0].flaps_per_h - 60.0).abs() < 1e-9);
-        assert!(tips(&s)[0].starts_with("LHR-B: tracking flickered"));
+        assert_eq!(cards(&s)[0].title, "Tracking flickering");
     }
 
     #[test]
@@ -818,8 +916,8 @@ mod tests {
         let text = render_tree(&usb_tree(&dongles, &ctx));
         let expected = "\
 AMD USB controller (PCI 0801.0003)  3 Valve devices  ! 3 on the root hub, crowded
- |- port 1  dongle D1 -> LHR-A left controller  #1  41.7s not tracking, 3 incidents, 2 flaps/h  radio gaps 4 (longest 0.3s)
- |- port 3  dongle D2 -> LHR-B tracker  #2  9.0s not tracking, 1 incident, 120 flaps/h
+ |- port 1  dongle D1 -> LHR-A left controller  #1  41.7s not tracking, 3 incidents, 2 flickers/h  radio gaps 4 (longest 0.3s)
+ |- port 3  dongle D2 -> LHR-B tracker  #2  9.0s not tracking, 1 incident, 120 flickers/h
  '- port 4  dongle D4 -> LHR-P tracker  parked
 Renesas USB controller  2 Valve devices
  '- port 5  Generic USB Hub 045B:0209
