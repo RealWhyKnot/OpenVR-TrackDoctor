@@ -21,6 +21,7 @@ const USAGE: &str = "tdinspect: look inside TrackDoctor's data while building fe
   tdinspect packets [SESSION]          per-dongle radio summary from a dev-build session
   tdinspect gaps [SESSION] [DONGLE]    every packet gap from a dev-build session
   tdinspect events [SESSION] [TEXT]    events, optionally only lines containing TEXT
+  tdinspect diagnose [SESSION]         run a session's saved events through the diagnosis
   tdinspect track [SESSION] [SERIAL]   movement track as CSV on stdout
   tdinspect live-packets [SECONDS]     listen to the dongles read-only and print each second
   tdinspect log [LINES]                the end of the dev-build debug log
@@ -38,6 +39,7 @@ fn main() {
         Some("packets") => session(arg(1)).map(|d| packet_summary(&d)),
         Some("gaps") => session(arg(1)).map(|d| packet_gaps(&d, arg(2))),
         Some("events") => session(arg(1)).map(|d| events(&d, arg(2))),
+        Some("diagnose") => session(arg(1)).map(|d| diagnose(&d)),
         Some("track") => session(arg(1)).map(|d| track_csv(&d, arg(2))),
         Some("live-packets") => {
             live_packets(arg(1).and_then(|s| s.parse().ok()).unwrap_or(10));
@@ -243,6 +245,21 @@ fn events(dir: &Path, filter: Option<&str>) {
         );
         if filter.is_none_or(|f| line.to_lowercase().contains(&f.to_lowercase())) {
             out!("{line}");
+        }
+    }
+}
+
+fn diagnose(dir: &Path) {
+    let names = Names::load_default();
+    let mut diagnosis = trackdoctor::diagnose::Diagnosis::default();
+    for ev in sessions::read_events(dir) {
+        diagnosis.ingest(&ev);
+    }
+    for f in diagnosis.findings(&|s| label(&names, Some(s))) {
+        out!("{}", f.title);
+        out!("  {}", f.what);
+        for (i, step) in f.steps.iter().enumerate() {
+            out!("  {}. {step}", i + 1);
         }
     }
 }

@@ -1,8 +1,8 @@
 use crate::diagnose::{Finding, Rule};
-use crate::event::{Kind, SignalEvent};
+use crate::event::{Kind, SignalEvent, TrackState};
 use crate::signals::logtail::naive_ms;
 use crate::summary::plural;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const SHORT_MS: u64 = 1000;
 pub const LONG_MS: u64 = 100;
@@ -10,6 +10,13 @@ pub const SHARED_MS: u64 = 250;
 pub const POWER_OFF_MS: u64 = 50;
 pub const WINDOW_MS: u64 = 10 * 60_000;
 pub const CUTOUTS: usize = 15;
+pub const LED_BEFORE_MS: u64 = 250;
+pub const LED_AFTER_MS: u64 = 500;
+pub const LED_DROPS: usize = 20;
+pub const LED_MIN: usize = 8;
+pub const LED_SHARE: f64 = 0.2;
+pub const LED_OVER_CHANCE: f64 = 3.0;
+const SHIFTS_MS: [i64; 4] = [-120_000, -60_000, 60_000, 120_000];
 
 #[derive(Clone, Debug)]
 struct Gap {
@@ -25,6 +32,22 @@ pub struct Radio {
     gaps: Vec<Gap>,
     peers: BTreeMap<String, String>,
     logged: BTreeMap<String, u64>,
+    drops: BTreeMap<String, Vec<u64>>,
+    led: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Led {
+    pub key: String,
+    pub drops: usize,
+    pub led: usize,
+    pub chance: f64,
+}
+
+impl Led {
+    pub fn share(&self) -> f64 {
+        (self.led as f64 - self.chance) / self.drops as f64
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,7 +85,19 @@ impl Radio {
                 if long && crate::DEV {
                     self.note(&key, ev.t_ms);
                 }
-                long
+                self.recheck(&key) || long
+            }
+            Kind::TrackingState {
+                from: TrackState::RunningOk,
+                to,
+            } if *to != TrackState::RunningOk => {
+                let Some(dev) = &ev.device else {
+                    return false;
+                };
+                let v = self.drops.entry(dev.clone()).or_default();
+                let at = v.partition_point(|&t| t <= ev.t_ms);
+                v.insert(at, ev.t_ms);
+                self.recheck(dev)
             }
             Kind::WirelessDisconnect => {
                 let Some(dev) = &ev.device else {
@@ -165,6 +200,62 @@ impl Radio {
     pub fn peers(&self) -> usize {
         self.peers.len()
     }
+
+    fn recheck(&mut self, key: &str) -> bool {
+        if self.drops.get(key).is_none_or(|d| d.len() < LED_DROPS) || self.led.contains(key) {
+            return false;
+        }
+        if self.link(key).is_none() {
+            return false;
+        }
+        self.led.insert(key.to_string());
+        true
+    }
+
+    fn link(&self, key: &str) -> Option<Led> {
+        let drops = self.drops.get(key)?;
+        if drops.len() < LED_DROPS {
+            return None;
+        }
+        let gaps: Vec<u64> = self
+            .gaps
+            .iter()
+            .filter(|g| g.key == key)
+            .map(|g| g.t_ms)
+            .collect();
+        let count = |shift: i64| {
+            drops
+                .iter()
+                .filter(|&&t| {
+                    let t = t as i64 + shift;
+                    let lo = (t - LED_AFTER_MS as i64).max(0) as u64;
+                    let hi = (t + LED_BEFORE_MS as i64).max(0) as u64;
+                    let i = gaps.partition_point(|&g| g < lo);
+                    i < gaps.len() && gaps[i] <= hi
+                })
+                .count()
+        };
+        let led = count(0);
+        let chance =
+            SHIFTS_MS.iter().map(|&s| count(s)).sum::<usize>() as f64 / SHIFTS_MS.len() as f64;
+        let l = Led {
+            key: key.to_string(),
+            drops: drops.len(),
+            led,
+            chance,
+        };
+        (led >= LED_MIN && led as f64 >= LED_OVER_CHANCE * chance && l.share() >= LED_SHARE)
+            .then_some(l)
+    }
+
+    pub fn links(&self) -> Vec<Led> {
+        let cut: BTreeSet<String> = self.cutouts().into_iter().map(|c| c.key).collect();
+        self.drops
+            .keys()
+            .filter(|k| !cut.contains(*k))
+            .filter_map(|k| self.link(k))
+            .collect()
+    }
 }
 
 fn clock(local: Option<i64>) -> Option<String> {
@@ -211,14 +302,11 @@ pub fn findings(radio: &Radio, label: &dyn Fn(&str) -> String) -> Vec<Finding> {
                     if c.others == 1 { "once".to_string() } else { plural(c.others, "time") }
                 ),
             };
-            let mut steps = vec![
-                "Put its dongle on a USB extension cable or in a dongle cradle, out in the open with a clear view of where you play.".to_string(),
-                "Keep the dongles apart from each other and away from the back of the PC.".to_string(),
-            ];
+            let mut steps = placement();
             if crowded {
                 steps.push("Move the dongles away from your Wi-Fi router and other wireless gear.".to_string());
             } else {
-                steps.push("If you wear it on your back or hip, your body blocks the signal whenever you face away from the dongle. A dongle higher up or nearer the middle of the room can help.".to_string());
+                steps.push(BODY.to_string());
             }
             steps.push("Pair it with a different dongle. If it still cuts out, the device itself is the likely cause.".to_string());
             Finding {
@@ -228,6 +316,44 @@ pub fn findings(radio: &Radio, label: &dyn Fn(&str) -> String) -> Vec<Finding> {
                 what: format!(
                     "{lead} for a tenth of a second or longer {} in 10 minutes{span}.{compare}",
                     plural(c.count, "time")
+                ),
+                steps,
+            }
+        })
+        .collect()
+}
+
+const BODY: &str = "If you wear it on your back or hip, your body blocks the signal whenever you face away from the dongle. A dongle higher up or nearer the middle of the room can help.";
+
+fn placement() -> Vec<String> {
+    vec![
+        "Put its dongle on a USB extension cable or in a dongle cradle, out in the open with a clear view of where you play.".to_string(),
+        "Keep the dongles apart from each other and away from the back of the PC.".to_string(),
+    ]
+}
+
+pub fn led_findings(radio: &Radio, label: &dyn Fn(&str) -> String) -> Vec<Finding> {
+    radio
+        .links()
+        .into_iter()
+        .map(|l| {
+            let name = label(&l.key);
+            let mut steps = placement();
+            steps.push(BODY.to_string());
+            steps.push("Pair it with a different dongle. If its drops still follow the wireless cutouts, the device itself is the likely cause.".to_string());
+            let chance = match l.chance.round() as usize {
+                0 => "almost none".to_string(),
+                n => format!("about {n}"),
+            };
+            Finding {
+                rule: Rule::RadioDrops,
+                key: l.key.clone(),
+                title: format!("{name} loses tracking when its wireless signal cuts out"),
+                what: format!(
+                    "{} of its {} tracking drops came within half a second of SteamVR losing its wireless signal for a moment. By chance you'd expect {chance}. That puts roughly {}% of its drops down to the wireless link.",
+                    l.led,
+                    l.drops,
+                    (l.share() * 100.0).round() as usize
                 ),
                 steps,
             }
@@ -452,5 +578,83 @@ mod tests {
             );
             assert!(x.steps.iter().any(|s| s.contains("Wi-Fi")));
         }
+    }
+
+    fn drop(dev: (&str, &str), at_ms: u64) -> SignalEvent {
+        SignalEvent::at(
+            T0 + at_ms,
+            crate::event::Source::Api,
+            Some(dev.0.to_string()),
+            Kind::TrackingState {
+                from: TrackState::RunningOk,
+                to: TrackState::CalibratingOutOfRange,
+            },
+            "",
+        )
+    }
+
+    fn played(r: &mut Radio, dev: (&str, &str), led: u64) {
+        for i in 0..20 {
+            let at = 100_000 + i * 45_000;
+            r.ingest(&gap_ms(dev, at, 60));
+            if i < led {
+                r.ingest(&drop(dev, at + 200));
+            }
+        }
+        for k in 0..20 {
+            r.ingest(&drop(dev, 2_000_000 + k * 37_000));
+        }
+    }
+
+    #[test]
+    fn drops_right_after_radio_gaps_are_flagged() {
+        let mut r = Radio::default();
+        played(&mut r, ROOM[3], 20);
+        let f = led_findings(&r, &label);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].key, "LHR-A43A0229");
+        assert!(
+            f[0].what.starts_with("20 of its 40 tracking drops"),
+            "{}",
+            f[0].what
+        );
+        assert!(
+            f[0].what.contains("you'd expect almost none."),
+            "{}",
+            f[0].what
+        );
+        assert!(
+            f[0].what
+                .ends_with("roughly 50% of its drops down to the wireless link."),
+            "{}",
+            f[0].what
+        );
+        assert!(findings(&r, &label).is_empty());
+    }
+
+    #[test]
+    fn drops_away_from_radio_gaps_stay_quiet() {
+        let mut r = Radio::default();
+        played(&mut r, ROOM[3], 0);
+        assert!(r.links().is_empty());
+    }
+
+    #[test]
+    fn a_few_radio_led_drops_are_not_enough() {
+        let mut r = Radio::default();
+        played(&mut r, ROOM[3], LED_MIN as u64 - 1);
+        assert!(r.links().is_empty());
+    }
+
+    #[test]
+    fn the_flag_goes_up_once() {
+        let mut r = Radio::default();
+        let mut ups = 0;
+        for i in 0..30 {
+            let at = 100_000 + i * 45_000;
+            ups += r.ingest(&gap_ms(ROOM[3], at, 60)) as usize;
+            ups += r.ingest(&drop(ROOM[3], at + 200)) as usize;
+        }
+        assert_eq!(ups, 1);
     }
 }

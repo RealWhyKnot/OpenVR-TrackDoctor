@@ -31,6 +31,7 @@ pub enum Rule {
     Battery,
     UsbDrop,
     RadioLink,
+    RadioDrops,
     Facing,
     DeviceFault,
     BaseLayout,
@@ -464,6 +465,9 @@ impl Diagnosis {
         if !self.radio.cutouts().is_empty() {
             out.push(Rule::RadioLink);
         }
+        if !self.radio.links().is_empty() {
+            out.push(Rule::RadioDrops);
+        }
         if !self.spots.found().is_empty() {
             out.push(Rule::Facing);
         }
@@ -859,6 +863,7 @@ impl Diagnosis {
             Rule::Battery => crate::check_battery::findings(&self.power, label),
             Rule::UsbDrop => self.usb.findings(rule, label),
             Rule::RadioLink => crate::check_radio::findings(&self.radio, label),
+            Rule::RadioDrops => crate::check_radio::led_findings(&self.radio, label),
             Rule::Facing => self.spots.explain(label),
             Rule::BaseLayout => crate::check_layout::explain(&self.layout),
             Rule::DeviceFault => crate::check_device::explain(&self.health, rule, label, &|d| {
