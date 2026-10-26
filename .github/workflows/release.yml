@@ -27,7 +27,10 @@ jobs:
   release:
     name: Publish ${{ inputs.tag || github.ref_name }}
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -52,8 +55,11 @@ jobs:
           tag: ${{ steps.tag.outputs.tag }}
           prerelease-suffix: 'beta'
 
-      - name: Workflow syntax
-        uses: RealWhyKnot/workflows/workflow-syntax@v1
+      - name: Wait for CI
+        uses: RealWhyKnot/workflows/wait-for-ci@v1
+        with:
+          sha: ${{ steps.tag.outputs.sha }}
+          workflow: ci.yml
 
       - name: Test
         shell: pwsh
@@ -62,16 +68,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tests failed ($LASTEXITCODE)" }
 
       - name: Install NSIS
-        shell: pwsh
-        run: |
-          $want = 'v3.12'
-          $have = ''
-          $exe = 'C:\Program Files (x86)\NSIS\makensis.exe'
-          if (Test-Path -LiteralPath $exe) { $have = (& $exe /VERSION) }
-          if ($have -ne $want) {
-            choco install nsis --version 3.12.0 --force -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw "choco install nsis failed ($LASTEXITCODE)" }
-          }
+        uses: RealWhyKnot/workflows/setup-nsis@v1
+        with:
+          version: '3.12'
 
       - name: Package
         id: package
