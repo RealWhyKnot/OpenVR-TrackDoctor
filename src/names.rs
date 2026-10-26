@@ -13,7 +13,7 @@ pub fn data_dir() -> PathBuf {
 pub struct Names {
     path: PathBuf,
     map: BTreeMap<String, String>,
-    stamp: Option<SystemTime>,
+    stamp: Option<(SystemTime, u64)>,
 }
 
 pub fn parse(text: &str) -> BTreeMap<String, String> {
@@ -26,8 +26,9 @@ pub fn parse(text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+fn modified(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 impl Names {
@@ -159,7 +160,13 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "LHR-1 = waist\n# left controller\nLHR-2 =\n");
         std::fs::write(&path, "LHR-1 = waist\nLHR-2 = right hand\n").unwrap();
-        let _ = names.refresh();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(names.stamp.unwrap().0)
+            .unwrap();
+        assert!(names.refresh());
         assert_eq!(names.get("LHR-2"), Some("right hand"));
         let _ = std::fs::remove_file(&path);
     }
