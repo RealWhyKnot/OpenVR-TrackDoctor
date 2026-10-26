@@ -146,6 +146,27 @@ pub enum Kind {
         name: String,
         status: DriverStatus,
     },
+    StillJitter {
+        mm: f32,
+        secs: f32,
+        bases: Option<u32>,
+        base_m: Option<f32>,
+    },
+    RestartFailed {
+        base: String,
+        hits: Option<(u32, u32)>,
+    },
+    PositionOutOfBounds {
+        x: f32,
+        y: f32,
+        z: f32,
+    },
+    ImuMisaligned,
+    BaseLayout {
+        bases: Vec<crate::check_layout::LayoutBase>,
+        arc_deg: Option<f32>,
+        samples: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -222,6 +243,34 @@ impl std::fmt::Display for Kind {
                     write!(f, "SteamVR couldn't load the {name} driver: {e}")
                 }
             },
+            Kind::StillJitter {
+                mm,
+                secs,
+                bases,
+                base_m,
+            } => write!(
+                f,
+                "{}",
+                crate::check_jitter::still_text(&crate::check_jitter::Still {
+                    mm: *mm,
+                    secs: *secs,
+                    bases: *bases,
+                    base_m: *base_m,
+                })
+            ),
+            Kind::RestartFailed { base, .. } => write!(
+                f,
+                "couldn't start tracking again from base {base} because too few of its sensors saw that base"
+            ),
+            Kind::ImuMisaligned => {
+                write!(
+                    f,
+                    "had its tracking reset because its motion and light sensors disagreed about which way it faced"
+                )
+            }
+            Kind::PositionOutOfBounds { .. } => {
+                write!(f, "SteamVR rejected its position as out of bounds")
+            }
             k => write!(f, "{k:?}"),
         }
     }

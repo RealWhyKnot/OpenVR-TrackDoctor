@@ -186,6 +186,7 @@ impl Engine {
                 self.session.pose(&meta.serial, meta.class, &f);
                 let parked = meta.class != DeviceClass::TrackingReference
                     && beyond_radius(f.pos, &self.thresholds);
+                let layout = self.diagnosis.layout.frame(meta, parked, &f);
                 let was_parked = self.live.get(&f.idx).is_some_and(|l| l.parked);
                 let serial = meta.serial.clone();
                 let class = meta.class;
@@ -201,6 +202,16 @@ impl Engine {
                         rot: f.rot,
                     },
                 );
+                self.diagnosis
+                    .spots
+                    .frame(&serial, class, lighthouse, parked, &f);
+                if let Some(ev) = self
+                    .diagnosis
+                    .jitter
+                    .frame(&serial, class, lighthouse, parked, &f)
+                {
+                    self.ingest(ev, &mut emitted);
+                }
                 if f.valid && f.state == TrackState::RunningOk && !parked {
                     let trail = self.trail.entry(serial.clone()).or_default();
                     if trail
@@ -221,6 +232,9 @@ impl Engine {
                     let detail = kind.to_string();
                     let ev =
                         SignalEvent::at(f.t_ms, Source::Api, Some(serial.clone()), kind, detail);
+                    self.ingest(ev, &mut emitted);
+                }
+                if let Some(ev) = layout {
                     self.ingest(ev, &mut emitted);
                 }
                 let run_detectors = match class {

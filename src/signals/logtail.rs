@@ -44,6 +44,9 @@ struct Patterns {
     driver_loaded: Regex,
     driver_off: Regex,
     driver_failed: Regex,
+    restart_failed: Regex,
+    out_of_bounds: Regex,
+    imu_misaligned: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -106,6 +109,15 @@ fn patterns() -> &'static Patterns {
         driver_loaded: Regex::new(r"Loaded server driver (\S+) \([^)]*\) from (.+?)\s*$").unwrap(),
         driver_off: Regex::new(r"Not loading driver (\S+) because it is disabled in settings").unwrap(),
         driver_failed: Regex::new(r"Unable to load driver (\S+) because of error (\S+?)\.? Skipping").unwrap(),
+        restart_failed: Regex::new(
+            r"Trying to start tracking from base ([0-9A-Fa-f]+): (?:Not enough contiguous samples for a bootstrap pose|Available samples not sufficient for booting(?: \(hits: (\d+)\+(\d+)\))?)",
+        )
+        .unwrap(),
+        out_of_bounds: Regex::new(
+            r"(?:Resetting tracking|Calibration failed): position out of bounds \((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)",
+        )
+        .unwrap(),
+        imu_misaligned: Regex::new(r"IMU misalignment unreasonably large").unwrap(),
     })
 }
 
@@ -296,6 +308,23 @@ pub fn parse_line(line: &str, read_ms: u64) -> Option<SignalEvent> {
             b: c[2].to_ascii_uppercase(),
             mm: (c[3].parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u32,
             deg: c[4].parse().unwrap_or(0.0),
+        }
+    } else if let Some(c) = p.restart_failed.captures(msg) {
+        Kind::RestartFailed {
+            base: c[1].to_ascii_uppercase(),
+            hits: c
+                .get(2)
+                .zip(c.get(3))
+                .and_then(|(a, b)| Some((a.as_str().parse().ok()?, b.as_str().parse().ok()?))),
+        }
+    } else if p.imu_misaligned.is_match(msg) {
+        Kind::ImuMisaligned
+    } else if let Some(c) = p.out_of_bounds.captures(msg) {
+        let n = |i: usize| c[i].parse().unwrap_or(0.0);
+        Kind::PositionOutOfBounds {
+            x: n(1),
+            y: n(2),
+            z: n(3),
         }
     } else {
         let c = p.radio_gap.captures(msg)?;
@@ -851,7 +880,6 @@ mod tests {
     fn unrelated_lines_ignored() {
         for line in [
             "Fri Oct 02 2026 19:25:47.916 [Info] - lighthouse: LHR-FD4FF7E2 C: Trying to add a secondary base 9D8DEA7B: Not enough contiguous samples for a bootstrap pose",
-            "Fri Oct 02 2026 20:21:16.199 [Info] - lighthouse: LHR-A43A0229 C: Resetting tracking: IMU misalignment unreasonably large (-9.8, -3.7, -13) deg sigma 1.3",
             "Tue Sep 09 2026 - vrserver: some unrelated chatter",
         ] {
             assert!(parse_line(line, 0).is_none(), "{line}");
@@ -902,5 +930,67 @@ mod tests {
         assert_eq!(events.len(), 1, "a rotated file is one restart, not two");
         assert_eq!(events[0].kind, Kind::LogRotated);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn steamvr_2_18_restart_failure_lines() {
+        let ev = parse(
+            "Sat Oct 17 2026 00:32:25.015 [Info] - lighthouse: LHR-A66FAA1B C: Trying to start tracking from base C538EFC9: Not enough contiguous samples for a bootstrap pose",
+        );
+        assert_eq!(ev.device.as_deref(), Some("LHR-A66FAA1B"));
+        assert_eq!(
+            ev.kind,
+            Kind::RestartFailed {
+                base: "C538EFC9".into(),
+                hits: None
+            }
+        );
+        assert_eq!(
+            kind(
+                "Sat Oct 24 2026 17:38:18.867 [Info] - lighthouse: LHR-617D30D7 C: Trying to start tracking from base B394A63C: Available samples not sufficient for booting (hits: 2+1)"
+            ),
+            Kind::RestartFailed {
+                base: "B394A63C".into(),
+                hits: Some((2, 1))
+            }
+        );
+        for line in [
+            "Fri Oct 16 2026 21:05:02.373 [Info] - lighthouse: LHR-7E902102 C: Trying to add a secondary base B394A63C: Available samples not sufficient for booting (hits: 2+3)",
+            "Fri Oct 02 2026 19:25:47.916 [Info] - lighthouse: LHR-FD4FF7E2 C: Trying to add a secondary base 9D8DEA7B: Not enough contiguous samples for a bootstrap pose",
+        ] {
+            assert!(parse_line(line, 0).is_none(), "{line}");
+        }
+        assert_eq!(
+            kind(
+                "Fri Oct 02 2026 19:53:24.845 [Info] - lighthouse: LHR-FD4FF7E2 C: Trying to start tracking from base 9D8DEA7B: Samples didn't yield successful bootstrap pose"
+            ),
+            Kind::BootstrapFail
+        );
+    }
+
+    #[test]
+    fn steamvr_2_18_out_of_bounds_lines() {
+        let ev = parse(
+            "Tue Oct 20 2026 15:24:16.970 [Info] - lighthouse: LHR-A66FAA1B C: Resetting tracking: position out of bounds (-3.2, -0.78, -8)",
+        );
+        assert_eq!(ev.device.as_deref(), Some("LHR-A66FAA1B"));
+        assert_eq!(
+            ev.kind,
+            Kind::PositionOutOfBounds {
+                x: -3.2,
+                y: -0.78,
+                z: -8.0
+            }
+        );
+        assert_eq!(
+            kind(
+                "Sat Oct 17 2026 04:00:09.060 [Info] - lighthouse: LHR-A66FAA1B C: Calibration failed: position out of bounds (0.77, -2.5, -6.6)"
+            ),
+            Kind::PositionOutOfBounds {
+                x: 0.77,
+                y: -2.5,
+                z: -6.6
+            }
+        );
     }
 }

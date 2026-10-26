@@ -25,6 +25,15 @@ pub enum Rule {
     HardBase,
     RoomCheck,
     Update,
+    Shaky,
+    SlowRestart,
+    DriverFailed,
+    Battery,
+    UsbDrop,
+    RadioLink,
+    Facing,
+    DeviceFault,
+    BaseLayout,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +147,14 @@ pub struct Diagnosis {
     updates: BTreeMap<String, bool>,
     pub drivers: BTreeMap<String, DriverStatus>,
     fired: BTreeSet<(Rule, String)>,
+    pub jitter: crate::check_jitter::Jitter,
+    restarts: crate::check_restart::Restarts,
+    power: crate::check_battery::Power,
+    usb: crate::check_usb::UsbHealth,
+    radio: crate::check_radio::Radio,
+    pub spots: crate::check_spots::Spots,
+    health: crate::check_device::DeviceHealth,
+    pub layout: crate::check_layout::Layout,
 }
 
 fn burst(times: &[u64], window_ms: u64) -> usize {
@@ -155,6 +172,20 @@ impl Diagnosis {
     pub fn ingest(&mut self, ev: &SignalEvent) -> bool {
         self.relations.ingest(ev);
         self.sight.ingest(ev);
+        self.layout.ingest(ev);
+        let checks = [
+            self.jitter.ingest(ev),
+            self.restarts.ingest(ev),
+            self.power.ingest(ev),
+            self.usb.ingest(ev),
+            self.radio.ingest(ev),
+            self.health.ingest(ev),
+            matches!(ev.kind, Kind::TrackingState { .. }) && self.spots.check(),
+        ];
+        self.ingest_rules(ev) || checks.contains(&true)
+    }
+
+    fn ingest_rules(&mut self, ev: &SignalEvent) -> bool {
         if ev.kind == Kind::LogRotated {
             self.run_start = None;
             self.run += 1;
@@ -252,9 +283,10 @@ impl Diagnosis {
                     return false;
                 }
             }
+            Kind::BaseLayout { .. } => self.layout.audited(&ev.kind),
             Kind::Driver { name, status } => {
-                self.drivers.insert(name.clone(), status.clone());
-                return false;
+                let prev = self.drivers.insert(name.clone(), status.clone());
+                return crate::check_software::changed(name, prev.as_ref(), status);
             }
             _ => return false,
         }
@@ -413,6 +445,37 @@ impl Diagnosis {
         }
         if !self.updates.is_empty() {
             out.push(Rule::Update);
+        }
+        if self.jitter.active() {
+            out.push(Rule::Shaky);
+        }
+        if self.restarts.active() {
+            out.push(Rule::SlowRestart);
+        }
+        if crate::check_software::any_failed(&self.drivers) {
+            out.push(Rule::DriverFailed);
+        }
+        if !self.power.flat().is_empty() {
+            out.push(Rule::Battery);
+        }
+        if self.usb.any() {
+            out.push(Rule::UsbDrop);
+        }
+        if !self.radio.cutouts().is_empty() {
+            out.push(Rule::RadioLink);
+        }
+        if !self.spots.found().is_empty() {
+            out.push(Rule::Facing);
+        }
+        if !self
+            .health
+            .faults(&|d| self.faulty_boards().any(|(b, _)| b == d))
+            .is_empty()
+        {
+            out.push(Rule::DeviceFault);
+        }
+        if !self.layout.problems().is_empty() {
+            out.push(Rule::BaseLayout);
         }
         out
     }
@@ -790,6 +853,17 @@ impl Diagnosis {
                     steps,
                 )]
             }
+            Rule::Shaky => self.jitter.explain(label),
+            Rule::SlowRestart => self.restarts.findings(label),
+            Rule::DriverFailed => crate::check_software::findings(&self.drivers),
+            Rule::Battery => crate::check_battery::findings(&self.power, label),
+            Rule::UsbDrop => self.usb.findings(rule, label),
+            Rule::RadioLink => crate::check_radio::findings(&self.radio, label),
+            Rule::Facing => self.spots.explain(label),
+            Rule::BaseLayout => crate::check_layout::explain(&self.layout),
+            Rule::DeviceFault => crate::check_device::explain(&self.health, rule, label, &|d| {
+                self.faulty_boards().any(|(b, _)| b == d)
+            }),
         }
     }
 }

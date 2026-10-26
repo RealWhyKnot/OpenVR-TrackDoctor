@@ -453,7 +453,7 @@ mod capture {
     use crate::event::now_ms;
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use std::sync::mpsc::Sender;
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use std::time::{Duration, Instant};
 
     mod ffi {
@@ -848,8 +848,7 @@ mod capture {
             });
         }
 
-        fn scan(&mut self) {
-            let found = dongle_paths();
+        fn open_found(&mut self, found: Vec<Found>) {
             for f in found {
                 if self.ports.len() >= MAX_PORTS {
                     break;
@@ -969,8 +968,29 @@ mod capture {
         }
     }
 
+    fn spawn_finder() -> (Sender<()>, Receiver<Vec<Found>>) {
+        let (ask_tx, ask_rx) = channel::<()>();
+        let (found_tx, found_rx) = channel();
+        crate::app::spawn("dongle-scan", move || {
+            while ask_rx.recv().is_ok() {
+                let started = Instant::now();
+                let found = dongle_paths();
+                let took = started.elapsed().as_millis();
+                if took >= super::GAP_MS as u128 / 2 {
+                    crate::dlog!("packets: looking for dongles took {took} ms");
+                }
+                if found_tx.send(found).is_err() {
+                    return;
+                }
+            }
+        });
+        (ask_tx, found_rx)
+    }
+
     pub fn run(tx: Sender<Msg>, gate: Arc<Gate>) {
         let mut cap = Capture::new();
+        let (ask, found) = spawn_finder();
+        let mut asked = false;
         let mut last_scan: Option<Instant> = None;
         let mut last_flush = Instant::now();
         let mut last_rollup = Instant::now();
@@ -984,17 +1004,19 @@ mod capture {
                 if !sent {
                     return;
                 }
+                if asked && found.recv_timeout(Duration::from_secs(5)).is_ok() {
+                    asked = false;
+                }
                 last_scan = None;
                 std::thread::sleep(Duration::from_millis(250));
                 continue;
             }
-            if last_scan.is_none_or(|t| t.elapsed() >= SCAN_EVERY) {
-                let started = Instant::now();
-                cap.scan();
-                let took = started.elapsed().as_millis();
-                if took >= super::GAP_MS as u128 / 2 {
-                    crate::dlog!("packets: looking for dongles took {took} ms");
-                }
+            if let Ok(list) = found.try_recv() {
+                asked = false;
+                cap.open_found(list);
+            }
+            if !asked && last_scan.is_none_or(|t| t.elapsed() >= SCAN_EVERY) {
+                asked = ask.send(()).is_ok();
                 last_scan = Some(Instant::now());
             }
             cap.pump(Duration::from_millis(200));
@@ -1016,7 +1038,7 @@ mod capture {
 
     pub fn listen(secs: u64, mut each: impl FnMut(&[Line])) {
         let mut cap = Capture::new();
-        cap.scan();
+        cap.open_found(dongle_paths());
         let end = Instant::now() + Duration::from_secs(secs);
         let mut last_flush = Instant::now();
         while Instant::now() < end {
